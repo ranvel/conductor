@@ -90,28 +90,6 @@ No SDK, no framework, no code changes, no keys to manage. Your app must
 already survive a user dragging a new version over the old one — that's the
 same contract Conductor automates.
 
-## The rules (read before adopting)
-
-Conductor is deliberately strict. These are features:
-
-- **Signed + notarized apps only.** Unsigned or ad-hoc-signed apps are refused
-  — there is no Team ID to anchor trust to.
-- **Versions only go up.** Downgrades are refused unconditionally, even for
-  legitimate recalls (an unauthenticated "please downgrade" signal is
-  indistinguishable from a replay attack).
-- **No post-install hooks. Ever.** A hook field in a network-fetched JSON file
-  would be unsigned instruction-following — the exact hole the rest of the
-  design closes. Run migrations on launch, like you already do for
-  drag-and-drop updates.
-- **Whole-bundle replacement only.** Patching inside a signed bundle breaks
-  the seal.
-- **The manifest is not trusted.** It tells Conductor *where* to look, never
-  *what* to accept. Everything security-relevant is verified from the signed
-  artifact itself.
-
-Apps needing privileged install steps (kexts, system extensions, privileged
-helpers) are out of scope — that's installer-package territory.
-
 ## Why `fallback_url`?
 
 Many vendors host their manifests and artifacts on GitHub (Releases or Pages).
@@ -133,6 +111,28 @@ Two rules keep the fallback honest:
 The fallback never changes what gets installed — every artifact passes the
 same verification (Team ID pinning, notarization) regardless of which URL
 served it.
+
+## The rules (read before adopting)
+
+Conductor is deliberately strict. These are features:
+
+- **Signed + notarized apps only.** Unsigned or ad-hoc-signed apps are refused
+  — there is no Team ID to anchor trust to.
+- **Versions only go up.** Downgrades are refused unconditionally, even for
+  legitimate recalls (an unauthenticated "please downgrade" signal is
+  indistinguishable from a replay attack).
+- **No post-install hooks. Ever.** A hook field in a network-fetched JSON file
+  would be unsigned instruction-following — the exact hole the rest of the
+  design closes. Run migrations on launch, like you already do for
+  drag-and-drop updates.
+- **Whole-bundle replacement only.** Patching inside a signed bundle breaks
+  the seal.
+- **The manifest is not trusted.** It tells Conductor *where* to look, never
+  *what* to accept. Everything security-relevant is verified from the signed
+  artifact itself.
+
+Apps needing privileged install steps (kexts, system extensions, privileged
+helpers) are out of scope — that's installer-package territory.
 
 
 ## Testing your integration
