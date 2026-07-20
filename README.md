@@ -112,6 +112,29 @@ Conductor is deliberately strict. These are features:
 Apps needing privileged install steps (kexts, system extensions, privileged
 helpers) are out of scope — that's installer-package territory.
 
+## Why `fallback_url`?
+
+Many vendors host their manifests and artifacts on GitHub (Releases or Pages).
+That's a fine primary — but GitHub has proven noticeably less reliable in
+recent months, and an updater that goes dark whenever one provider stumbles
+isn't doing its job. `fallback_url` lets you point at a second server,
+ideally on separate infrastructure (different host, different CDN, different
+failure domain), so an outage at your primary doesn't strand your users.
+
+Two rules keep the fallback honest:
+
+- **The fallback is for unreachability only.** Conductor tries it solely when
+  the primary URL is unresponsive — never as a second opinion. If the primary
+  is reachable, its manifest wins, always.
+- **Mind your cache TTLs.** A stale, CDN-cached fallback manifest can keep
+  advertising a build you've since retracted. Keep fallback caching short so
+  a recall propagates everywhere.
+
+The fallback never changes what gets installed — every artifact passes the
+same verification (Team ID pinning, notarization) regardless of which URL
+served it.
+
+
 ## Testing your integration
 
 ```
