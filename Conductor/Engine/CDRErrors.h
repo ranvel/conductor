@@ -47,6 +47,7 @@ typedef NS_ERROR_ENUM(CDRErrorDomain, CDRErrorCode) {
     CDRErrorUserDeclinedQuit             = 501,
     CDRErrorSwapFailed                   = 502,
     CDRErrorPermissionDenied             = 503,
+    CDRErrorUpdateCancelled              = 504,
 };
 
 /// Builds a CDRErrorDomain error with localized description copy centralized here.

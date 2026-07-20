@@ -28,13 +28,23 @@ typedef NS_ENUM(NSInteger, CDRUpdatePhase) {
 
 NSString *CDRUpdatePhaseName(CDRUpdatePhase phase);
 
+/// The user's answer to "the app is running" (replace-flow.md §4).
+typedef NS_ENUM(NSInteger, CDRQuitDecision) {
+    /// Politely terminate now (30s grace), then swap.
+    CDRQuitDecisionQuitAndUpdate = 0,
+    /// Park: observe termination (no terminate, no timeout), then swap.
+    CDRQuitDecisionUpdateOnQuit,
+    /// Abort cleanly (CDRErrorUserDeclinedQuit).
+    CDRQuitDecisionSkip,
+};
+
 @protocol CDRUpdateOperationDelegate <NSObject>
 - (void)updateOperation:(CDRUpdateOperation *)op didEnterPhase:(CDRUpdatePhase)phase;
-/// The managed app is running. Reply YES to quit it and continue, NO to abort.
+/// The managed app is running; the user decides (never force-terminate).
 /// Called on the main queue.
 - (void)updateOperation:(CDRUpdateOperation *)op
     requestsQuitDecisionFor:(NSArray<NSRunningApplication *> *)runningApps
-                      reply:(void (^)(BOOL quitAndContinue))reply;
+                      reply:(void (^)(CDRQuitDecision decision))reply;
 /// Terminal callback, main queue. error nil = success. wasRunning reports
 /// whether the app was quit by the flow (offer relaunch).
 - (void)updateOperation:(CDRUpdateOperation *)op
@@ -75,8 +85,17 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase);
 @property (nonatomic, readonly) CDRUpdatePhase phase;
 @property (nonatomic, readonly) CDRAppRegistration *registration;
 
+/// YES while parked in AwaitingQuit after an UpdateOnQuit decision.
+@property (atomic, readonly, getter=isParkedAwaitingQuit) BOOL parkedAwaitingQuit;
+
 /// Starts the operation. One shot; create a new operation per attempt.
 - (void)start;
+
+/// Cancels a parked update-on-quit: stops observing, cleans staging, finishes
+/// with CDRErrorUpdateCancelled. Honored only while parked in AwaitingQuit —
+/// a no-op in every other phase (a swap is never interrupted). Best-effort:
+/// if the app quits at the same moment, whichever lands first wins.
+- (void)cancelParkedUpdate;
 
 @end
 

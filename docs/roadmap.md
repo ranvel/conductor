@@ -57,9 +57,15 @@ Exit: unit tests for every transition in the two docs' state tables; an e2e
 retraction drill using the harness (promote 1.1, notify, swap manifest back
 to 1.0, observe State A loudness; install first for State B).
 
-## M3 — The product: menu bar app
+## M3 — The product: menu bar app (+ windowed UI)
 
-Replace the milestone status window with the real thing.
+Grow the milestone status window into a first-class windowed UI and add an
+*optional* menu bar presence. Both surfaces render one shared per-app row
+model. Menu-bar residency and Dock presence are each user choices (Settings)
+— some users only want a windowed app; a spot in their menu bar is theirs to
+grant, not ours to take. The app can never be made invisible (at least one
+surface stays on), and dev mode forces the status item visible for the
+session.
 
 - Menu bar presence: status item, per-app update list, badge on available
   updates; dev-mode icon variant (the unmissable state dev-mode.md requires).
@@ -103,6 +109,9 @@ only the public docs.
   the SMAppService privileged helper (do not build speculatively).
 - `kSecCSCheckNestedCode` benchmark on large real-world bundles; flip the
   constant or document why not.
+- Per-app scan cadence configuration: v1 ships one global cadence (M3);
+  revisit with dogfood feedback. Distinct from per-app *soak* overrides,
+  which remain explicitly not planned.
 - Edge inventory: App Translocation on Conductor itself, /Applications on
   unusual volumes, case-sensitive filesystems, multiple copies of a managed
   app, Gatekeeper policy changes in future macOS.

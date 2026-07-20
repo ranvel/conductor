@@ -34,6 +34,9 @@ static const int kPort = 8000;
 @property (nonatomic) NSMutableArray<NSString *> *logs;
 @property (nonatomic, nullable) NSError *finishError;
 @property (nonatomic) XCTestExpectation *finished;
+/// The reply the recorder gives when the operation asks about a running app.
+@property (nonatomic) CDRQuitDecision quitDecision; // default QuitAndUpdate
+@property (nonatomic) BOOL wasQuitByFlow;
 @end
 
 @implementation CDRIntegrationDelegate
@@ -51,13 +54,14 @@ static const int kPort = 8000;
 }
 - (void)updateOperation:(CDRUpdateOperation *)op
     requestsQuitDecisionFor:(NSArray<NSRunningApplication *> *)apps
-                      reply:(void (^)(BOOL))reply {
-    reply(YES); // testee is never running during tests, but be permissive
+                      reply:(void (^)(CDRQuitDecision))reply {
+    reply(self.quitDecision); // testee is never running during tests, but be permissive
 }
 - (void)updateOperation:(CDRUpdateOperation *)op
      didFinishWithError:(NSError *)error
        appWasQuitByFlow:(BOOL)wasQuit {
     self.finishError = error;
+    self.wasQuitByFlow = wasQuit;
     [self.finished fulfill];
 }
 - (BOOL)sawPhase:(CDRUpdatePhase)phase {
@@ -114,6 +118,13 @@ static const int kPort = 8000;
 }
 
 - (void)tearDown {
+    // The update-on-quit drills launch the testee; never leave one behind.
+    // (forceTerminate is fine in test cleanup — the polite-only rule binds the
+    // engine, not the harness.)
+    for (NSRunningApplication *app in
+         [NSRunningApplication runningApplicationsWithBundleIdentifier:kTesteeBundleID]) {
+        [app forceTerminate];
+    }
     [self.server terminate];
     self.server = nil;
     if (self.appsDir) {
@@ -314,6 +325,99 @@ static const int kPort = 8000;
         @"ad-hoc artifact must fail pinned validation, got %@", d.finishError);
     XCTAssertEqualObjects([self installedVersion], @"1.0");
     XCTAssertTrue([self stagingIsGone]);
+}
+
+#pragma mark - Update on quit
+
+/// Launches the temp-installed testee and waits until it registers as running.
+- (void)launchInstalledTestee {
+    XCTestExpectation *launched = [self expectationWithDescription:@"testee launched"];
+    NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
+    config.activates = NO;
+    [[NSWorkspace sharedWorkspace] openApplicationAtURL:self.installedApp
+                                          configuration:config
+                                      completionHandler:^(NSRunningApplication *app, NSError *error) {
+        XCTAssertNotNil(app, @"testee failed to launch: %@", error);
+        [launched fulfill];
+    }];
+    [self waitForExpectations:@[launched] timeout:30];
+
+    XCTestExpectation *running = [[XCTNSPredicateExpectation alloc]
+        initWithPredicate:[NSPredicate predicateWithBlock:^BOOL(id obj, NSDictionary *bindings) {
+            return [NSRunningApplication runningApplicationsWithBundleIdentifier:kTesteeBundleID].count > 0;
+        }] object:nil];
+    [self waitForExpectations:@[running] timeout:30];
+}
+
+/// Starts an operation that replies UpdateOnQuit and waits until it parks.
+/// Both drills need artifacts that pass the notarization gate — parking
+/// happens after verification, so they skip on unnotarized builds (same
+/// auto-detect as the positive-path test).
+- (nullable CDRIntegrationDelegate *)startParkedOperation:(CDRUpdateOperation **)outOp {
+    CDRManifest *manifest = [self manifestNamed:@"manifest.json"];
+    XCTAssertNotNil(manifest);
+
+    [self launchInstalledTestee];
+
+    CDRIntegrationDelegate *delegate = [[CDRIntegrationDelegate alloc] init];
+    delegate.quitDecision = CDRQuitDecisionUpdateOnQuit;
+    delegate.finished = [self expectationWithDescription:@"operation finished"];
+    CDRUpdateOperation *op = [[CDRUpdateOperation alloc] initWithRegistration:[self registration]
+                                                                     manifest:manifest
+                                                                      session:self.session
+                                                                     delegate:delegate];
+    [op start];
+
+    XCTestExpectation *parked = [[XCTNSPredicateExpectation alloc]
+        initWithPredicate:[NSPredicate predicateWithBlock:^BOOL(id obj, NSDictionary *bindings) {
+            return op.parkedAwaitingQuit;
+        }] object:nil];
+    [self waitForExpectations:@[parked] timeout:120];
+    XCTAssertTrue([delegate sawPhase:CDRUpdatePhaseAwaitingQuit]);
+    if (outOp) *outOp = op;
+    return delegate;
+}
+
+- (void)testUpdateOnQuitParksThenSwapsWhenAppExits {
+    if (!self.serveDir) { XCTSkip(@"run TestHarness/build-testee.sh first"); }
+    if (![CDRNotarizationCheck assessBundleAtURL:self.installedApp error:NULL]) {
+        XCTSkip(@"parking happens past the notarization gate — needs build-testee.sh --notarize");
+    }
+
+    CDRUpdateOperation *op = nil;
+    CDRIntegrationDelegate *d = [self startParkedOperation:&op];
+
+    // The user quits the app themselves; the parked operation observes the
+    // termination and proceeds to the swap.
+    for (NSRunningApplication *app in
+         [NSRunningApplication runningApplicationsWithBundleIdentifier:kTesteeBundleID]) {
+        [app terminate];
+    }
+    [self waitForExpectations:@[d.finished] timeout:120];
+
+    XCTAssertNil(d.finishError, @"parked swap failed: %@", d.finishError);
+    XCTAssertFalse(d.wasQuitByFlow, @"the flow did not quit the app — no relaunch offer");
+    XCTAssertEqualObjects([self installedVersion], @"1.1", @"swap happened after the quit");
+    XCTAssertTrue([self stagingIsGone]);
+}
+
+- (void)testCancelParkedUpdateLeavesEverythingUntouched {
+    if (!self.serveDir) { XCTSkip(@"run TestHarness/build-testee.sh first"); }
+    if (![CDRNotarizationCheck assessBundleAtURL:self.installedApp error:NULL]) {
+        XCTSkip(@"parking happens past the notarization gate — needs build-testee.sh --notarize");
+    }
+
+    CDRUpdateOperation *op = nil;
+    CDRIntegrationDelegate *d = [self startParkedOperation:&op];
+
+    [op cancelParkedUpdate];
+    [self waitForExpectations:@[d.finished] timeout:30];
+
+    XCTAssertEqual(d.finishError.code, CDRErrorUpdateCancelled);
+    XCTAssertEqualObjects([self installedVersion], @"1.0", @"installed app untouched");
+    XCTAssertTrue([self stagingIsGone], @"staging cleaned on cancellation");
+    XCTAssertEqual([NSRunningApplication runningApplicationsWithBundleIdentifier:kTesteeBundleID].count,
+                   1u, @"the running app was never touched");
 }
 
 - (void)testDeadServerFailsCleanly {

@@ -50,6 +50,10 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
 
 @property (nonatomic, nullable) NSURL *stagingURL;
 @property (nonatomic, nullable) NSString *pinnedTeamID;
+/// Captured in stepVerify: for the pre-swap freshness re-guard.
+@property (nonatomic, nullable) NSString *stagedShortVersion;
+@property (nonatomic, nullable) NSString *stagedBuildVersion;
+@property (atomic, readwrite, getter=isParkedAwaitingQuit) BOOL parkedAwaitingQuit;
 @property (nonatomic) BOOL appWasQuitByFlow;
 @property (nonatomic) BOOL started;
 @end
@@ -252,6 +256,8 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
         [self failWithError:CDRError(code, bundleID, nil, nil)];
         return;
     }
+    self.stagedShortVersion = stagedShort;
+    self.stagedBuildVersion = stagedBuild;
     [self log:@"%@: staged %@ (%@) > installed %@ (%@).", bundleID,
         stagedShort, stagedBuild ?: @"-",
         self.registration.installedShortVersion, self.registration.installedBuildVersion ?: @"-"];
@@ -299,31 +305,86 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
     [self enterPhase:CDRUpdatePhaseAwaitingQuit];
     id<CDRUpdateOperationDelegate> delegate = self.delegate;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [delegate updateOperation:self requestsQuitDecisionFor:running reply:^(BOOL quitAndContinue) {
-            if (!quitAndContinue) {
-                dispatch_async(self.workQueue, ^{
-                    [self failWithError:CDRError(CDRErrorUserDeclinedQuit, bundleID, nil, nil)];
-                });
-                return;
+        [delegate updateOperation:self requestsQuitDecisionFor:running reply:^(CDRQuitDecision decision) {
+            switch (decision) {
+                case CDRQuitDecisionSkip: {
+                    dispatch_async(self.workQueue, ^{
+                        [self failWithError:CDRError(CDRErrorUserDeclinedQuit, bundleID, nil, nil)];
+                    });
+                    return;
+                }
+
+                case CDRQuitDecisionQuitAndUpdate: {
+                    [self.quitMonitor requestQuitOfBundleID:bundleID timeout:30 completion:^(BOOL allQuit) {
+                        dispatch_async(self.workQueue, ^{
+                            if (!allQuit) {
+                                [self failWithError:CDRError(CDRErrorAppStillRunning, bundleID, nil, nil)];
+                                return;
+                            }
+                            self.appWasQuitByFlow = YES;
+                            [self stepSwap:stagedApp];
+                        });
+                    }];
+                    return;
+                }
+
+                case CDRQuitDecisionUpdateOnQuit: {
+                    // Park: verified and staged; swap when the app exits on
+                    // its own. appWasQuitByFlow stays NO — the user quit
+                    // deliberately, so no relaunch offer.
+                    self.parkedAwaitingQuit = YES;
+                    [self log:@"%@: update will install when the app quits.", bundleID];
+                    [self.quitMonitor observeTerminationOfBundleID:bundleID completion:^{
+                        dispatch_async(self.workQueue, ^{
+                            if (!self.parkedAwaitingQuit) return; // canceled first
+                            self.parkedAwaitingQuit = NO;
+                            [self stepSwap:stagedApp];
+                        });
+                    }];
+                    return;
+                }
             }
-            [self.quitMonitor requestQuitOfBundleID:bundleID timeout:30 completion:^(BOOL allQuit) {
-                dispatch_async(self.workQueue, ^{
-                    if (!allQuit) {
-                        [self failWithError:CDRError(CDRErrorAppStillRunning, bundleID, nil, nil)];
-                        return;
-                    }
-                    self.appWasQuitByFlow = YES;
-                    [self stepSwap:stagedApp];
-                });
-            }];
         }];
+    });
+}
+
+- (void)cancelParkedUpdate {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // The monitor is main-queue-bound; cancel there first so a not-yet-
+        // delivered termination can no longer fire.
+        [self.quitMonitor cancelObservation];
+        dispatch_async(self.workQueue, ^{
+            if (!self.parkedAwaitingQuit) return; // already swapping or done
+            self.parkedAwaitingQuit = NO;
+            [self failWithError:CDRError(CDRErrorUpdateCancelled, self.registration.bundleID, nil, nil)];
+        });
     });
 }
 
 /// §5 — the single mutation of /Applications.
 - (void)stepSwap:(NSURL *)stagedApp {
-    [self enterPhase:CDRUpdatePhaseSwapping];
     NSString *bundleID = self.registration.bundleID;
+
+    // Freshness re-guard: the installed copy may have changed since stepVerify
+    // ran — a parked wait can last days and the app may update itself. Re-read
+    // the installed Info.plist directly (NSBundle caches per URL) and refuse
+    // unless the staged bundle is still strictly newer. Nothing was touched.
+    NSDictionary *installedInfo = [NSDictionary dictionaryWithContentsOfURL:
+        [self.registration.appURL URLByAppendingPathComponent:@"Contents/Info.plist"]];
+    NSString *installedShort = installedInfo[@"CFBundleShortVersionString"];
+    if ([installedShort isKindOfClass:[NSString class]] && self.stagedShortVersion) {
+        NSString *installedBuild = installedInfo[@"CFBundleVersion"];
+        if (![CDRVersion isVersion:self.stagedShortVersion build:self.stagedBuildVersion
+                         newerThan:installedShort
+                             build:([installedBuild isKindOfClass:[NSString class]] ? installedBuild : nil)]) {
+            [self log:@"%@: installed copy is now %@ (was %@ when verified) — the staged update is no longer an upgrade.",
+                bundleID, installedShort, self.registration.installedShortVersion];
+            [self failWithError:CDRError(CDRErrorNotAnUpgrade, bundleID, nil, nil)];
+            return;
+        }
+    }
+
+    [self enterPhase:CDRUpdatePhaseSwapping];
 
     NSURL *backup = nil;
     NSError *error = nil;

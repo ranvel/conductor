@@ -7,6 +7,7 @@
 
 @interface CDRQuitMonitor ()
 @property (nonatomic, nullable) id observerToken;
+@property (nonatomic, copy, nullable) void (^observeCompletion)(void);
 @end
 
 @implementation CDRQuitMonitor
@@ -55,6 +56,43 @@
                    dispatch_get_main_queue(), ^{
         finish([CDRQuitMonitor runningInstancesOfBundleID:bundleID].count == 0);
     });
+}
+
+- (void)observeTerminationOfBundleID:(NSString *)bundleID
+                          completion:(void (^)(void))completion {
+    self.observeCompletion = completion;
+
+    __weak typeof(self) weakSelf = self;
+    void (^fireIfGone)(void) = ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || !self.observeCompletion) return;
+        if ([CDRQuitMonitor runningInstancesOfBundleID:bundleID].count > 0) return;
+        void (^stored)(void) = self.observeCompletion;
+        [self cancelObservation];
+        stored();
+    };
+
+    self.observerToken = [[NSWorkspace sharedWorkspace].notificationCenter
+        addObserverForName:NSWorkspaceDidTerminateApplicationNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+        if (![app.bundleIdentifier isEqualToString:bundleID]) return;
+        fireIfGone();
+    }];
+
+    // Zero-running fast path (and a recount in case the app quit between the
+    // caller's check and the observer registration).
+    dispatch_async(dispatch_get_main_queue(), fireIfGone);
+}
+
+- (void)cancelObservation {
+    self.observeCompletion = nil;
+    if (self.observerToken) {
+        [[NSWorkspace sharedWorkspace].notificationCenter removeObserver:self.observerToken];
+        self.observerToken = nil;
+    }
 }
 
 @end

@@ -61,6 +61,8 @@ static NSString *CDRLocalizedDescriptionForCode(CDRErrorCode code, NSString *_Nu
             return [NSString stringWithFormat:@"Replacing %@ failed. The installed copy was not modified.", app];
         case CDRErrorPermissionDenied:
             return [NSString stringWithFormat:@"Conductor does not have permission to replace %@ (it may be owned by another user). Update it manually, or adjust its ownership.", app];
+        case CDRErrorUpdateCancelled:
+            return [NSString stringWithFormat:@"The pending update for %@ was canceled. Nothing was changed.", app];
     }
     return @"An unknown error occurred.";
 }

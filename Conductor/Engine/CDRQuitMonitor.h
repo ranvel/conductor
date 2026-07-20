@@ -23,6 +23,17 @@ NS_ASSUME_NONNULL_BEGIN
                       timeout:(NSTimeInterval)timeout
                    completion:(void (^)(BOOL allQuit))completion;
 
+/// Observe-only ("update on quit"): never sends terminate, no timeout.
+/// Completion fires on the main queue once no instance of the bundle ID
+/// remains running — immediately if none are running now. One observation per
+/// monitor instance. Main queue only.
+- (void)observeTerminationOfBundleID:(NSString *)bundleID
+                          completion:(void (^)(void))completion;
+
+/// Cancels a pending observation; its completion will never fire. Main queue
+/// only. No-op when nothing is being observed.
+- (void)cancelObservation;
+
 @end
 
 NS_ASSUME_NONNULL_END

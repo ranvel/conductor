@@ -4,18 +4,17 @@
 //
 
 #import "CDRStatusWindowController.h"
-#import "CDRAppRegistration.h"
 #import "CDRDevModeSession.h"
+#import "CDRSharedLog.h"
 
-@interface CDRStatusWindowController () <NSTableViewDataSource, NSTableViewDelegate>
+@interface CDRStatusWindowController () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @property (nonatomic) CDRDevModeSession *session;
 @property (nonatomic) NSTableView *tableView;
 @property (nonatomic) NSTextView *logView;
 @property (nonatomic) NSButton *checkButton;
 @property (nonatomic) NSButton *checkAllButton;
 @property (nonatomic) NSButton *installButton;
-@property (nonatomic) NSMutableDictionary<NSString *, NSString *> *rowStatuses;   // bundleID → Available-column text
-@property (nonatomic) NSMutableSet<NSString *> *installEnabledBundleIDs;
+@property (nonatomic) id logObserver;
 @end
 
 @implementation CDRStatusWindowController
@@ -34,11 +33,25 @@
     if (!self) return nil;
 
     _session = session;
-    _registrations = @[];
-    _rowStatuses = [NSMutableDictionary dictionary];
-    _installEnabledBundleIDs = [NSMutableSet set];
+    _rowModels = @[];
     [self buildContentView];
+
+    for (NSString *line in [CDRSharedLog bufferedLines]) {
+        [self appendLine:line];
+    }
+    __weak typeof(self) weakSelf = self;
+    _logObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:CDRSharedLogDidAppendNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        [weakSelf appendLine:note.userInfo[CDRSharedLogLineKey]];
+    }];
     return self;
+}
+
+- (void)dealloc {
+    if (_logObserver) [[NSNotificationCenter defaultCenter] removeObserver:_logObserver];
 }
 
 - (void)buildContentView {
@@ -79,20 +92,24 @@
 
     NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
     nameCol.title = @"App";
-    nameCol.width = 200;
+    nameCol.width = 180;
     NSTableColumn *versionCol = [[NSTableColumn alloc] initWithIdentifier:@"version"];
     versionCol.title = @"Installed";
-    versionCol.width = 100;
-    NSTableColumn *availableCol = [[NSTableColumn alloc] initWithIdentifier:@"available"];
-    availableCol.title = @"Available";
-    availableCol.width = 100;
+    versionCol.width = 90;
+    NSTableColumn *statusCol = [[NSTableColumn alloc] initWithIdentifier:@"status"];
+    statusCol.title = @"Status";
+    statusCol.width = 230;
     NSTableColumn *bundleCol = [[NSTableColumn alloc] initWithIdentifier:@"bundle"];
     bundleCol.title = @"Bundle ID";
-    bundleCol.width = 240;
+    bundleCol.width = 200;
     [self.tableView addTableColumn:nameCol];
     [self.tableView addTableColumn:versionCol];
-    [self.tableView addTableColumn:availableCol];
+    [self.tableView addTableColumn:statusCol];
     [self.tableView addTableColumn:bundleCol];
+
+    NSMenu *rowMenu = [[NSMenu alloc] init];
+    rowMenu.delegate = self;
+    self.tableView.menu = rowMenu;
 
     NSScrollView *tableScroll = [[NSScrollView alloc] init];
     tableScroll.documentView = self.tableView;
@@ -106,7 +123,7 @@
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     buttons.spacing = 8;
     // "Check Now" on a specific app is the deliberate act that breaks through
-    // a soak; "Check All" is the global scan that never does (deferral.md).
+    // a deferral; "Check All" is the global sweep that never does (deferral.md).
     self.checkButton = [NSButton buttonWithTitle:@"Check Now" target:self action:@selector(checkClicked:)];
     self.checkAllButton = [NSButton buttonWithTitle:@"Check All" target:self action:@selector(checkAllClicked:)];
     self.installButton = [NSButton buttonWithTitle:@"Install" target:self action:@selector(installClicked:)];
@@ -134,55 +151,47 @@
 
 #pragma mark - Public
 
-- (void)setRegistrations:(NSArray<CDRAppRegistration *> *)registrations {
-    _registrations = [registrations copy];
+- (void)setRowModels:(NSArray<CDRAppRowModel *> *)rowModels {
+    _rowModels = [rowModels copy];
     [self.tableView reloadData];
     [self updateButtonState];
 }
 
-- (void)appendLog:(NSString *)line {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-        fmt.dateFormat = @"HH:mm:ss";
-        NSString *stamped = [NSString stringWithFormat:@"[%@] %@\n",
-                             [fmt stringFromDate:[NSDate date]], line];
-        NSAttributedString *as = [[NSAttributedString alloc] initWithString:stamped attributes:@{
-            NSFontAttributeName: self.logView.font ?: [NSFont systemFontOfSize:11],
-            NSForegroundColorAttributeName: [NSColor labelColor],
-        }];
-        [self.logView.textStorage appendAttributedString:as];
-        [self.logView scrollRangeToVisible:NSMakeRange(self.logView.string.length, 0)];
-    });
-}
+#pragma mark - Log rendering
 
-- (void)setRowStatus:(NSString *)status installEnabled:(BOOL)enabled forBundleID:(NSString *)bundleID {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (status) {
-            self.rowStatuses[bundleID] = status;
-        } else {
-            [self.rowStatuses removeObjectForKey:bundleID];
-        }
-        if (enabled) {
-            [self.installEnabledBundleIDs addObject:bundleID];
-        } else {
-            [self.installEnabledBundleIDs removeObject:bundleID];
-        }
-        [self.tableView reloadData];
-        [self updateButtonState];
-    });
+- (void)appendLine:(NSString *)line {
+    if (!line) return;
+    NSAttributedString *as = [[NSAttributedString alloc] initWithString:[line stringByAppendingString:@"\n"]
+                                                             attributes:@{
+        NSFontAttributeName: self.logView.font ?: [NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: [NSColor labelColor],
+    }];
+    [self.logView.textStorage appendAttributedString:as];
+    [self.logView scrollRangeToVisible:NSMakeRange(self.logView.string.length, 0)];
 }
 
 #pragma mark - Actions
 
-- (nullable CDRAppRegistration *)selectedRegistration {
+- (nullable CDRAppRowModel *)selectedRow {
     NSInteger row = self.tableView.selectedRow;
-    if (row < 0 || row >= (NSInteger)self.registrations.count) return nil;
-    return self.registrations[row];
+    if (row < 0 || row >= (NSInteger)self.rowModels.count) return nil;
+    return self.rowModels[row];
+}
+
+- (nullable CDRAppRowModel *)clickedOrSelectedRow {
+    NSInteger row = self.tableView.clickedRow;
+    if (row >= 0 && row < (NSInteger)self.rowModels.count) return self.rowModels[row];
+    return [self selectedRow];
+}
+
+- (void)sendAction:(CDRAppRowActions)action forRow:(nullable CDRAppRowModel *)row {
+    if (row && (row.actions & action) && self.onRowAction) {
+        self.onRowAction(row.bundleID, action);
+    }
 }
 
 - (void)checkClicked:(id)sender {
-    CDRAppRegistration *reg = [self selectedRegistration];
-    if (reg && self.onCheck) self.onCheck(reg);
+    [self sendAction:CDRAppRowActionCheckNow forRow:[self selectedRow]];
 }
 
 - (void)checkAllClicked:(id)sender {
@@ -190,36 +199,63 @@
 }
 
 - (void)installClicked:(id)sender {
-    CDRAppRegistration *reg = [self selectedRegistration];
-    if (reg && self.onInstall) self.onInstall(reg);
+    [self sendAction:CDRAppRowActionInstall forRow:[self selectedRow]];
+}
+
+- (void)contextActionClicked:(NSMenuItem *)item {
+    [self sendAction:(CDRAppRowActions)item.tag forRow:[self clickedOrSelectedRow]];
 }
 
 - (void)updateButtonState {
-    CDRAppRegistration *reg = [self selectedRegistration];
-    self.checkButton.enabled = (reg != nil);
-    self.checkAllButton.enabled = (self.registrations.count > 0);
-    self.installButton.enabled = (reg != nil && [self.installEnabledBundleIDs containsObject:reg.bundleID]);
+    CDRAppRowModel *row = [self selectedRow];
+    self.checkButton.enabled = (row != nil && (row.actions & CDRAppRowActionCheckNow));
+    self.checkAllButton.enabled = (self.rowModels.count > 0);
+    self.installButton.enabled = (row != nil && (row.actions & CDRAppRowActionInstall));
+}
+
+#pragma mark - Row context menu
+
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    [menu removeAllItems];
+    CDRAppRowModel *row = [self clickedOrSelectedRow];
+    if (!row) return;
+
+    struct { CDRAppRowActions action; NSString *title; } entries[] = {
+        { CDRAppRowActionInstall,       @"Install" },
+        { CDRAppRowActionCheckNow,      @"Check Now" },
+        { CDRAppRowActionCancelPending, @"Cancel Pending Update" },
+        { CDRAppRowActionVendorSite,    @"Developer's Site" },
+        { CDRAppRowActionIgnore,        @"Ignore" },
+        { CDRAppRowActionUnignore,      @"Stop Ignoring" },
+    };
+    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
+        if (!(row.actions & entries[i].action)) continue;
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:entries[i].title
+                                                      action:@selector(contextActionClicked:)
+                                               keyEquivalent:@""];
+        item.target = self;
+        item.tag = (NSInteger)entries[i].action;
+        [menu addItem:item];
+    }
 }
 
 #pragma mark - NSTableViewDataSource / Delegate
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-    return self.registrations.count;
+    return self.rowModels.count;
 }
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
-    CDRAppRegistration *reg = self.registrations[row];
+    CDRAppRowModel *model = self.rowModels[row];
     NSString *text = @"";
     if ([column.identifier isEqualToString:@"name"]) {
-        text = reg.appURL.lastPathComponent.stringByDeletingPathExtension;
+        text = model.appName;
     } else if ([column.identifier isEqualToString:@"version"]) {
-        text = reg.installedBuildVersion
-            ? [NSString stringWithFormat:@"%@ (%@)", reg.installedShortVersion, reg.installedBuildVersion]
-            : reg.installedShortVersion;
-    } else if ([column.identifier isEqualToString:@"available"]) {
-        text = self.rowStatuses[reg.bundleID] ?: @"—";
+        text = model.installedVersionDisplay;
+    } else if ([column.identifier isEqualToString:@"status"]) {
+        text = model.stateLine;
     } else if ([column.identifier isEqualToString:@"bundle"]) {
-        text = reg.bundleID;
+        text = model.bundleID;
     }
 
     NSTableCellView *cell = [tableView makeViewWithIdentifier:column.identifier owner:self];
@@ -238,6 +274,8 @@
         ]];
     }
     cell.textField.stringValue = text;
+    cell.textField.textColor = (model.state == CDRAppRowStateIgnored)
+        ? [NSColor secondaryLabelColor] : [NSColor labelColor];
     return cell;
 }
 

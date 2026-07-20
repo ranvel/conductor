@@ -1,0 +1,312 @@
+//
+//  CDRAppRowModelTests.m
+//  ConductorTests
+//
+//  The row model is the single mapping both UI surfaces render from; these
+//  tests pin every outcome → (state, stateLine, actions, badge) so the menu
+//  and the window cannot drift, and guard the copy rule that user-facing text
+//  never says "soak".
+//
+
+#import <XCTest/XCTest.h>
+#import "CDRAppRowModel.h"
+#import "CDRAppRegistration.h"
+#import "CDRAppUpdateState.h"
+#import "CDRManifest.h"
+#import "CDRUpdatePolicy.h"
+#import "CDRErrors.h"
+
+static NSString * const kBundleID = @"com.example.app";
+
+@interface CDRAppRowModelTests : XCTestCase
+@property (nonatomic) NSURL *fixtureRoot;
+@property (nonatomic) NSDate *now;
+@end
+
+@implementation CDRAppRowModelTests
+
+- (void)setUp {
+    [super setUp];
+    self.fixtureRoot = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+        URLByAppendingPathComponent:[NSString stringWithFormat:@"cdr-rowmodel-tests-%@", NSUUID.UUID.UUIDString]
+                        isDirectory:YES];
+    self.now = [NSDate dateWithTimeIntervalSinceReferenceDate:800000000];
+}
+
+- (void)tearDown {
+    [[NSFileManager defaultManager] removeItemAtURL:self.fixtureRoot error:NULL];
+    [super tearDown];
+}
+
+#pragma mark - Fixtures
+
+- (CDRAppRegistration *)registrationWithInstalledVersion:(NSString *)version {
+    NSURL *appURL = [[self.fixtureRoot URLByAppendingPathComponent:NSUUID.UUID.UUIDString]
+        URLByAppendingPathComponent:@"TestApp.app"];
+    NSURL *resources = [appURL URLByAppendingPathComponent:@"Contents/Resources"];
+    [[NSFileManager defaultManager] createDirectoryAtURL:resources
+                             withIntermediateDirectories:YES attributes:nil error:NULL];
+    [@{
+        @"CFBundleIdentifier": kBundleID,
+        @"CFBundleShortVersionString": version,
+    } writeToURL:[appURL URLByAppendingPathComponent:@"Contents/Info.plist"] atomically:YES];
+    NSData *json = [NSJSONSerialization dataWithJSONObject:@{
+        @"conductor": @1,
+        @"update_url": @"https://example.com/manifest.json",
+        @"vendor_url": @"https://example.com",
+    } options:0 error:NULL];
+    [json writeToURL:[resources URLByAppendingPathComponent:@"conductor.json"] atomically:YES];
+
+    CDRAppRegistration *reg = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+    XCTAssertNotNil(reg);
+    return reg;
+}
+
+static CDRManifest *ManifestWithVersion(NSString *version, NSString *urgencyToken) {
+    NSMutableDictionary *dict = [@{
+        @"conductor_manifest": @1,
+        @"bundle_id": kBundleID,
+        @"version": version,
+        @"url": @"https://example.com/app.dmg",
+    } mutableCopy];
+    if (urgencyToken) dict[@"urgency"] = urgencyToken;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:0 error:NULL];
+    return [CDRManifest manifestWithData:data error:NULL];
+}
+
+/// Shorthand: decision from the real policy so fixtures can't invent
+/// unreachable outcomes.
+- (CDRUpdateDecision *)decideInstalled:(NSString *)installed
+                              manifest:(CDRManifest *)manifest
+                                 state:(CDRAppUpdateState *)state
+                                  soak:(CDRSoakDuration)soak
+                          breakThrough:(BOOL)breakThrough {
+    return [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:installed]
+                                           manifest:manifest
+                                              state:state
+                                       soakDuration:soak
+                                       breakThrough:breakThrough
+                                                now:self.now];
+}
+
+- (CDRAppRowModel *)modelWithInstalled:(NSString *)installed
+                              decision:(CDRUpdateDecision *)decision
+                              manifest:(CDRManifest *)manifest {
+    return [CDRAppRowModel modelForRegistration:[self registrationWithInstalledVersion:installed]
+                                   lastDecision:decision
+                                decidedManifest:manifest
+                                      lastError:nil
+                                        ignored:NO
+                                 operationPhase:CDRUpdatePhaseIdle
+                                         parked:NO];
+}
+
+#pragma mark - Outcome mappings
+
+- (void)testAvailableRow {
+    CDRManifest *m = ManifestWithVersion(@"1.1", nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+    XCTAssertEqual(row.state, CDRAppRowStateAvailable);
+    XCTAssertTrue([row.stateLine containsString:@"1.1 available"]);
+    XCTAssertTrue(row.actions & CDRAppRowActionInstall);
+    XCTAssertTrue(row.actions & CDRAppRowActionCheckNow);
+    XCTAssertTrue(row.actions & CDRAppRowActionIgnore);
+    XCTAssertTrue(row.contributesToBadge);
+    XCTAssertEqualObjects(row.availableVersion, @"1.1");
+}
+
+- (void)testAvailableUrgentRowAttributesTheFlagToTheDeveloper {
+    CDRManifest *m = ManifestWithVersion(@"1.1", @"data_loss");
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+    XCTAssertTrue([row.stateLine containsString:@"developer"]);
+}
+
+- (void)testDeferredRowHidesInstall {
+    CDRManifest *m = ManifestWithVersion(@"1.1", nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil
+                                            soak:CDRSoakDurationOneWeek breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeDeferred);
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+    XCTAssertEqual(row.state, CDRAppRowStateDeferred);
+    XCTAssertTrue([row.stateLine containsString:@"deferred until"]);
+    XCTAssertFalse(row.actions & CDRAppRowActionInstall);
+    XCTAssertTrue(row.actions & CDRAppRowActionCheckNow);
+    XCTAssertFalse(row.contributesToBadge);
+}
+
+- (void)testRetractedPendingRowIsCalmButBadges {
+    // Notified about 1.1, not installed, manifest back at 1.0 → State A.
+    CDRAppUpdateState *state = [[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now]
+        stateByNotingNotifiedVersion:@"1.1" build:nil at:self.now];
+    CDRManifest *m = ManifestWithVersion(@"1.0", nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:state
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeRetractedPending);
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+    XCTAssertTrue([row.stateLine containsString:@"retracted"]);
+    XCTAssertFalse(row.actions & CDRAppRowActionInstall);
+    XCTAssertTrue(row.actions & CDRAppRowActionVendorSite);
+    XCTAssertTrue(row.contributesToBadge);
+}
+
+- (void)testRetractedInstalledRowPersistsWithoutBadge {
+    // Installed the version that later vanished from the manifest → State B.
+    CDRAppUpdateState *state = [[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now]
+        stateByNotingNotifiedVersion:@"1.1" build:nil at:self.now];
+    CDRManifest *m = ManifestWithVersion(@"1.0", nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.1" manifest:m state:state
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeRetractedInstalled);
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.1" decision:d manifest:m];
+    XCTAssertEqual(row.state, CDRAppRowStateRecalled);
+    XCTAssertTrue([row.stateLine containsString:@"recalled"]);
+    XCTAssertTrue(row.actions & CDRAppRowActionVendorSite);
+    XCTAssertFalse(row.contributesToBadge);
+}
+
+- (void)testUpToDateAndDroppedSilentlyPresentIdentically {
+    CDRManifest *m = ManifestWithVersion(@"1.0", nil);
+    CDRUpdateDecision *upToDate = [self decideInstalled:@"1.0" manifest:m state:nil
+                                                   soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(upToDate.outcome, CDRUpdateOutcomeUpToDate);
+
+    // Saw 1.1 while deferred (never notified), then it vanished.
+    CDRAppUpdateState *soaking = [[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now];
+    CDRUpdateDecision *dropped = [self decideInstalled:@"1.0" manifest:m state:soaking
+                                                  soak:CDRSoakDurationOneWeek breakThrough:NO];
+    XCTAssertEqual(dropped.outcome, CDRUpdateOutcomeDroppedSilently);
+
+    CDRAppRowModel *a = [self modelWithInstalled:@"1.0" decision:upToDate manifest:m];
+    CDRAppRowModel *b = [self modelWithInstalled:@"1.0" decision:dropped manifest:m];
+    XCTAssertEqual(a.state, b.state);
+    XCTAssertEqualObjects(a.stateLine, b.stateLine);
+    XCTAssertEqual(a.actions, b.actions);
+    XCTAssertEqual(a.contributesToBadge, b.contributesToBadge);
+}
+
+#pragma mark - Precedence
+
+- (void)testIgnoredOverridesDecisionButKeepsCheckNow {
+    CDRManifest *m = ManifestWithVersion(@"1.1", nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                  lastDecision:d
+                                               decidedManifest:m
+                                                     lastError:nil
+                                                       ignored:YES
+                                                operationPhase:CDRUpdatePhaseIdle
+                                                        parked:NO];
+    XCTAssertEqual(row.state, CDRAppRowStateIgnored);
+    XCTAssertTrue(row.actions & CDRAppRowActionCheckNow);
+    XCTAssertTrue(row.actions & CDRAppRowActionUnignore);
+    XCTAssertFalse(row.actions & CDRAppRowActionInstall);
+    XCTAssertFalse(row.contributesToBadge);
+}
+
+- (void)testWorkingRowCarriesPhaseNameAndNoActions {
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                  lastDecision:nil
+                                               decidedManifest:nil
+                                                     lastError:nil
+                                                       ignored:NO
+                                                operationPhase:CDRUpdatePhaseDownloading
+                                                        parked:NO];
+    XCTAssertEqual(row.state, CDRAppRowStateWorking);
+    XCTAssertTrue([row.stateLine containsString:CDRUpdatePhaseName(CDRUpdatePhaseDownloading)]);
+    XCTAssertEqual(row.actions, CDRAppRowActionNone);
+}
+
+- (void)testParkedRowOffersOnlyCancel {
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                  lastDecision:nil
+                                               decidedManifest:nil
+                                                     lastError:nil
+                                                       ignored:NO
+                                                operationPhase:CDRUpdatePhaseAwaitingQuit
+                                                        parked:YES];
+    XCTAssertEqual(row.state, CDRAppRowStateWaitingForQuit);
+    XCTAssertTrue([row.stateLine containsString:@"waiting for"]);
+    XCTAssertEqual(row.actions, CDRAppRowActionCancelPending);
+}
+
+- (void)testCheckFailedRowExposesVendorSiteFromError {
+    NSError *error = [NSError errorWithDomain:CDRErrorDomain code:CDRErrorManifestUnreachable
+                                     userInfo:@{
+        NSLocalizedDescriptionKey: @"could not reach the update server",
+        CDRErrorVendorURLKey: [NSURL URLWithString:@"https://vendor.example.com"],
+    }];
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                  lastDecision:nil
+                                               decidedManifest:nil
+                                                     lastError:error
+                                                       ignored:NO
+                                                operationPhase:CDRUpdatePhaseIdle
+                                                        parked:NO];
+    XCTAssertEqual(row.state, CDRAppRowStateCheckFailed);
+    XCTAssertTrue([row.stateLine containsString:@"check failed"]);
+    XCTAssertTrue(row.actions & CDRAppRowActionVendorSite);
+    XCTAssertEqualObjects(row.vendorURL.absoluteString, @"https://vendor.example.com");
+}
+
+- (void)testUnknownRowBeforeFirstCheck {
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                  lastDecision:nil
+                                               decidedManifest:nil
+                                                     lastError:nil
+                                                       ignored:NO
+                                                operationPhase:CDRUpdatePhaseIdle
+                                                        parked:NO];
+    XCTAssertEqual(row.state, CDRAppRowStateUnknown);
+    XCTAssertTrue(row.actions & CDRAppRowActionCheckNow);
+    XCTAssertFalse(row.contributesToBadge);
+}
+
+#pragma mark - Copy rule
+
+/// "Soak" is spec/internal vocabulary; user-facing copy says "deferred"
+/// (deferral.md). The row model is user-facing.
+- (void)testNoStateLineEverSaysSoak {
+    CDRManifest *newer = ManifestWithVersion(@"1.1", nil);
+    CDRManifest *older = ManifestWithVersion(@"1.0", nil);
+    CDRAppUpdateState *notified = [[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now]
+        stateByNotingNotifiedVersion:@"1.1" build:nil at:self.now];
+
+    NSArray<CDRAppRowModel *> *rows = @[
+        [self modelWithInstalled:@"1.0"
+                        decision:[self decideInstalled:@"1.0" manifest:newer state:nil
+                                                  soak:CDRSoakDurationOff breakThrough:NO]
+                        manifest:newer],
+        [self modelWithInstalled:@"1.0"
+                        decision:[self decideInstalled:@"1.0" manifest:newer state:nil
+                                                  soak:CDRSoakDurationOneWeek breakThrough:NO]
+                        manifest:newer],
+        [self modelWithInstalled:@"1.0"
+                        decision:[self decideInstalled:@"1.0" manifest:newer state:nil
+                                                  soak:CDRSoakDurationOneWeek breakThrough:YES]
+                        manifest:newer],
+        [self modelWithInstalled:@"1.0"
+                        decision:[self decideInstalled:@"1.0" manifest:older state:notified
+                                                  soak:CDRSoakDurationOff breakThrough:NO]
+                        manifest:older],
+        [self modelWithInstalled:@"1.1"
+                        decision:[self decideInstalled:@"1.1" manifest:older state:notified
+                                                  soak:CDRSoakDurationOff breakThrough:NO]
+                        manifest:older],
+        [self modelWithInstalled:@"1.0" decision:nil manifest:nil],
+    ];
+    for (CDRAppRowModel *row in rows) {
+        XCTAssertFalse([row.stateLine.lowercaseString containsString:@"soak"],
+                       @"user-facing state line says 'soak': %@", row.stateLine);
+    }
+}
+
+@end
