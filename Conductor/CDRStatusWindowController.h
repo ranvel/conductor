@@ -19,16 +19,24 @@ NS_ASSUME_NONNULL_BEGIN
 /// Registrations to display (already filtered through the session by the caller).
 @property (nonatomic, copy) NSArray<CDRAppRegistration *> *registrations;
 
-/// Invoked with the selected registration when the user clicks Check / Install.
+/// Invoked with the selected registration when the user clicks Check Now /
+/// Install. Check Now is the deliberate per-app act that breaks through a
+/// soak (deferral.md); the caller decides what that means.
 @property (nonatomic, copy, nullable) void (^onCheck)(CDRAppRegistration *registration);
 @property (nonatomic, copy, nullable) void (^onInstall)(CDRAppRegistration *registration);
+/// Invoked when the user clicks Check All — the global scan, which must NOT
+/// break through soaks.
+@property (nonatomic, copy, nullable) void (^onCheckAll)(void);
 
 /// Appends a timestamped line to the status log (safe from any queue).
 - (void)appendLog:(NSString *)line;
 
-/// Enables the Install button for the given bundle ID (an update is known to
-/// be available), with the version used for display.
-- (void)setInstallAvailable:(BOOL)available forBundleID:(NSString *)bundleID version:(nullable NSString *)version;
+/// Sets the Available-column text for the app's row (nil → "—") and whether
+/// Install is enabled for it. Deferred / available / retracted are different
+/// row texts (roadmap.md M2) — real list rows arrive with the M3 UI.
+- (void)setRowStatus:(nullable NSString *)status
+      installEnabled:(BOOL)enabled
+         forBundleID:(NSString *)bundleID;
 
 @end
 

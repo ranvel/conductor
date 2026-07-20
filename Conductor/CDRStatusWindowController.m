@@ -12,8 +12,10 @@
 @property (nonatomic) NSTableView *tableView;
 @property (nonatomic) NSTextView *logView;
 @property (nonatomic) NSButton *checkButton;
+@property (nonatomic) NSButton *checkAllButton;
 @property (nonatomic) NSButton *installButton;
-@property (nonatomic) NSMutableDictionary<NSString *, NSString *> *availableVersions; // bundleID → version
+@property (nonatomic) NSMutableDictionary<NSString *, NSString *> *rowStatuses;   // bundleID → Available-column text
+@property (nonatomic) NSMutableSet<NSString *> *installEnabledBundleIDs;
 @end
 
 @implementation CDRStatusWindowController
@@ -33,7 +35,8 @@
 
     _session = session;
     _registrations = @[];
-    _availableVersions = [NSMutableDictionary dictionary];
+    _rowStatuses = [NSMutableDictionary dictionary];
+    _installEnabledBundleIDs = [NSMutableSet set];
     [self buildContentView];
     return self;
 }
@@ -102,10 +105,14 @@
     NSStackView *buttons = [[NSStackView alloc] init];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     buttons.spacing = 8;
-    self.checkButton = [NSButton buttonWithTitle:@"Check for Update" target:self action:@selector(checkClicked:)];
+    // "Check Now" on a specific app is the deliberate act that breaks through
+    // a soak; "Check All" is the global scan that never does (deferral.md).
+    self.checkButton = [NSButton buttonWithTitle:@"Check Now" target:self action:@selector(checkClicked:)];
+    self.checkAllButton = [NSButton buttonWithTitle:@"Check All" target:self action:@selector(checkAllClicked:)];
     self.installButton = [NSButton buttonWithTitle:@"Install" target:self action:@selector(installClicked:)];
     self.installButton.enabled = NO;
     [buttons addArrangedSubview:self.checkButton];
+    [buttons addArrangedSubview:self.checkAllButton];
     [buttons addArrangedSubview:self.installButton];
     [stack addArrangedSubview:buttons];
 
@@ -148,12 +155,17 @@
     });
 }
 
-- (void)setInstallAvailable:(BOOL)available forBundleID:(NSString *)bundleID version:(NSString *)version {
+- (void)setRowStatus:(NSString *)status installEnabled:(BOOL)enabled forBundleID:(NSString *)bundleID {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (available && version) {
-            self.availableVersions[bundleID] = version;
+        if (status) {
+            self.rowStatuses[bundleID] = status;
         } else {
-            [self.availableVersions removeObjectForKey:bundleID];
+            [self.rowStatuses removeObjectForKey:bundleID];
+        }
+        if (enabled) {
+            [self.installEnabledBundleIDs addObject:bundleID];
+        } else {
+            [self.installEnabledBundleIDs removeObject:bundleID];
         }
         [self.tableView reloadData];
         [self updateButtonState];
@@ -173,6 +185,10 @@
     if (reg && self.onCheck) self.onCheck(reg);
 }
 
+- (void)checkAllClicked:(id)sender {
+    if (self.onCheckAll) self.onCheckAll();
+}
+
 - (void)installClicked:(id)sender {
     CDRAppRegistration *reg = [self selectedRegistration];
     if (reg && self.onInstall) self.onInstall(reg);
@@ -181,7 +197,8 @@
 - (void)updateButtonState {
     CDRAppRegistration *reg = [self selectedRegistration];
     self.checkButton.enabled = (reg != nil);
-    self.installButton.enabled = (reg != nil && self.availableVersions[reg.bundleID] != nil);
+    self.checkAllButton.enabled = (self.registrations.count > 0);
+    self.installButton.enabled = (reg != nil && [self.installEnabledBundleIDs containsObject:reg.bundleID]);
 }
 
 #pragma mark - NSTableViewDataSource / Delegate
@@ -200,7 +217,7 @@
             ? [NSString stringWithFormat:@"%@ (%@)", reg.installedShortVersion, reg.installedBuildVersion]
             : reg.installedShortVersion;
     } else if ([column.identifier isEqualToString:@"available"]) {
-        text = self.availableVersions[reg.bundleID] ?: @"—";
+        text = self.rowStatuses[reg.bundleID] ?: @"—";
     } else if ([column.identifier isEqualToString:@"bundle"]) {
         text = reg.bundleID;
     }

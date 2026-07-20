@@ -96,8 +96,10 @@ if [[ "$NOTARIZE" == 1 ]]; then
 	done
 fi
 
-# v1.0: the starting install.
+# v1.0: the starting install. v1.1: lets the M2 retraction drill simulate a
+# completed install (State B) without requiring notarized artifacts.
 ditto "$BUILD/v1.0/ConductorTestee.app" "$SERVE/ConductorTestee-1.0.app"
+ditto "$BUILD/v1.1/ConductorTestee.app" "$SERVE/ConductorTestee-1.1.app"
 
 # v1.1: the update artifact, DMG (primary) and zip (alternate path).
 hdiutil create -srcfolder "$BUILD/v1.1" -volname "ConductorTestee" \
@@ -136,6 +138,31 @@ sed -e 's/"version": "1.1"/"version": "0.9"/' -e 's/"build": "110"/"build": "90"
 	"$SERVE/manifest.json" > "$SERVE/manifest-downgrade.json"
 sed -e 's/com.ranvel.conductor-testee/com.wrong.bundle-id/' \
 	"$SERVE/manifest.json" > "$SERVE/manifest-wrong-bundle.json"
+
+# Retraction manifest (retraction.md): the vendor swapped the manifest back to
+# 1.0 after promoting 1.1 — legitimately advertising the older build, unlike
+# manifest-downgrade.json (0.9, the in-operation refusal test). Points at the
+# genuine 1.0 DMG.
+SHA256_V10=$(shasum -a 256 "$SERVE/ConductorTestee-1.0.dmg" | cut -d' ' -f1)
+sed -e 's/"version": "1.1"/"version": "1.0"/' -e 's/"build": "110"/"build": "100"/' \
+	-e "s/ConductorTestee-1.1.dmg/ConductorTestee-1.0.dmg/" \
+	-e "s/\"sha256\": \"${SHA256}\"/\"sha256\": \"${SHA256_V10}\"/" \
+	"$SERVE/manifest.json" > "$SERVE/manifest-retracted.json"
+
+# Urgency manifest (deferral.md): same 1.1 payload flagged data_loss — must
+# bypass the soak window only, nothing else.
+cat > "$SERVE/manifest-urgent.json" <<-JSON
+{
+  "conductor_manifest": 1,
+  "bundle_id": "com.ranvel.conductor-testee",
+  "version": "1.1",
+  "build": "110",
+  "url": "http://localhost:${PORT}/ConductorTestee-1.1.dmg",
+  "sha256": "${SHA256}",
+  "urgency": "data_loss",
+  "changelog_url": "http://localhost:${PORT}/"
+}
+JSON
 
 # Replay manifest: advertises "1.2" but its artifact is the v1.0 build.
 SHA256_REPLAY=$(shasum -a 256 "$SERVE/ConductorTestee-1.0.dmg" | cut -d' ' -f1)
