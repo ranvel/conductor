@@ -29,10 +29,10 @@ no `kSecCSCheckNestedCode` (one constant to revisit); spctl shell-out
 confined to one class; quarantine stripped pre-swap so the swap is the sole
 mutation of /Applications.
 
-Known gap: the full positive path (actual swap) awaits notarized testee
-artifacts — store notarytool credentials, run
-`TestHarness/build-testee.sh --notarize`, re-run the integration tests
-(they auto-detect and assert the swap).
+~~Known gap~~ closed (2026-07-20): testee artifacts notarized via
+`TestHarness/build-testee.sh --notarize`; the integration tests auto-detected
+the stapled artifacts and now assert the full positive path (actual swap),
+including the update-on-quit park/swap and cancel cases.
 
 ## M2 — Memory: deferral + retraction
 
