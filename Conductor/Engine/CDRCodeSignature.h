@@ -26,6 +26,16 @@ NS_ASSUME_NONNULL_BEGIN
                pinnedTeamID:(NSString *)teamID
                       error:(NSError **)error;
 
+/// Validates a live XPC peer against a requirement pinning BOTH the code-signing
+/// identifier AND the Team ID. The peer's identity is taken from the connection's
+/// audit token — never processIdentifier, which is racy under PID reuse.
+/// Errors: CDRErrorTeamIDMismatch (valid signature, wrong identity) or
+/// CDRErrorSignatureInvalid (anything else).
++ (BOOL)validateConnection:(NSXPCConnection *)connection
+              pinnedTeamID:(NSString *)teamID
+          pinnedIdentifier:(NSString *)identifier
+                     error:(NSError **)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -1,6 +1,6 @@
 # Conductor — Project Index
 
-> Auto-maintained by Claude. Last updated: 2026-08-08
+> Auto-maintained by Claude. Last updated: 2026-08-10
 
 ## Project Structure
 
@@ -54,8 +54,11 @@ The update engine: single-purpose classes composed by CDRUpdateOperation.
 - `Conductor/Engine/CDRArtifactStager.m` — Content-sniffed extraction, single .app discovery
 - `Conductor/Engine/CDRAtomicSwapper.h` — Sole /Applications mutation: atomic same-volume replace
 - `Conductor/Engine/CDRAtomicSwapper.m` — NSFileManager replaceItem, backup to Trash
-- `Conductor/Engine/CDRCodeSignature.h` — Team ID capture and pinned code signature validation
-- `Conductor/Engine/CDRCodeSignature.m` — Security.framework SecCode APIs, anchor requirement
+- `Conductor/Engine/CDRCodeSignature.h` — Team ID capture, pinned validation, and XPC audit-token validation
+- `Conductor/Engine/CDRCodeSignature.m` — Security.framework SecCode APIs, anchor requirement, audit-token peer check
+- `Conductor/Engine/CDRHelperProtocol.h` — Shared XPC protocol for privileged helper (one method: swap)
+- `Conductor/Engine/CDRPrivilegedHelperManager.h` — SMAppService daemon lifecycle and XPC swap proxy
+- `Conductor/Engine/CDRPrivilegedHelperManager.m` — Helper registration, connection management, privileged swap
 - `Conductor/Engine/CDRDevModeSession.h` — Session-only transport relaxation for one bundle ID
 - `Conductor/Engine/CDRDevModeSession.m` — Launch argument parsing, HTTP allowance per bundle
 - `Conductor/Engine/CDRErrors.h` — CDRErrorDomain codes grouped by hundreds (1xx–6xx)
@@ -78,6 +81,12 @@ The update engine: single-purpose classes composed by CDRUpdateOperation.
 - `Conductor/Engine/CDRUpdateStateStore.m` — Load/save with retention TTL, first_seen pruning
 - `Conductor/Engine/CDRVersion.h` — Numeric-aware dotted version string comparison
 - `Conductor/Engine/CDRVersion.m` — Component-wise compare, short version + build ordering
+
+### /CDRPrivilegedHelper/
+Root-level XPC daemon for escalated bundle swaps (SMAppService LaunchDaemon).
+
+- `CDRPrivilegedHelper/main.m` — XPC listener, audit-token client validation, atomic swap as root
+- `CDRPrivilegedHelper/com.ranvel.Conductor.PrivilegedHelper.plist` — LaunchDaemon definition (on-demand MachServices)
 
 ### /ConductorTests/
 Unit and integration tests.
@@ -122,6 +131,30 @@ End-to-end test artifacts for dev-mode integration testing.
 - `TestHarness/build-testee.sh` — Builds, signs, and packages ConductorTestee v1.0/v1.1
 - `TestHarness/testee-main.m` — Minimal AppKit app that displays its version and quits politely
 - `TestHarness/.gitignore` — Ignores build intermediates
+
+### /TestHarness/einval-investigation/
+VM-targeted harness for diagnosing the EINVAL swap failure on macOS Tahoe.
+
+- `TestHarness/einval-investigation/Makefile` — Builds all C/ObjC harnesses via clang
+- `TestHarness/einval-investigation/run-all.sh` — Master runner: executes experiments 1–12, collects results
+- `TestHarness/einval-investigation/setup-bundles.sh` — Creates test .app bundles at production paths
+- `TestHarness/einval-investigation/teardown.sh` — Removes only test bundles (marker-gated safety)
+- `TestHarness/einval-investigation/results-template.md` — Blank results table for recording outcomes
+- `TestHarness/einval-investigation/lib/harness-common.h` — REPORT() macro, errno names, shared path constants
+- `TestHarness/einval-investigation/lib/bundle-factory.h` — API for creating minimal .app bundles
+- `TestHarness/einval-investigation/lib/bundle-factory.c` — Bundle creation with .einval-test-bundle marker
+- `TestHarness/einval-investigation/harnesses/01-renamex-swap.c` — Exp 1: direct renamex_np(RENAME_SWAP)
+- `TestHarness/einval-investigation/harnesses/02-rename-plain.c` — Exp 2: plain rename(2), key diagnostic
+- `TestHarness/einval-investigation/harnesses/03-inspect-fs.sh` — Exp 3: device IDs, symlinks, firmlinks
+- `TestHarness/einval-investigation/harnesses/04-inspect-xattr.sh` — Exp 4: xattrs, com.apple.macl, ACLs
+- `TestHarness/einval-investigation/harnesses/05-two-step-move.c` — Exp 5: Sparkle-style rename with rollback
+- `TestHarness/einval-investigation/harnesses/06-delete-then-move.m` — Exp 6: NSFileManager remove+move (Mysk path)
+- `TestHarness/einval-investigation/harnesses/07-ditto-copy.sh` — Exp 7: ditto copy after remove
+- `TestHarness/einval-investigation/harnesses/08-cli-helper.m` — Exp 8: strategies via NSTask/posix_spawn
+- `TestHarness/einval-investigation/harnesses/09-shell-wrapper.sh` — Exp 9: strategies via /bin/sh
+- `TestHarness/einval-investigation/harnesses/10-sudo-variants.sh` — Exp 10: key experiments with sudo
+- `TestHarness/einval-investigation/harnesses/11-remove-vs-replace.m` — Exp 11: removeItem vs replaceItem isolation
+- `TestHarness/einval-investigation/harnesses/12-tcc-toggle-notes.md` — Exp 12: manual App Management toggle procedure
 
 ### /icon/
 App icon source assets and generation tooling.

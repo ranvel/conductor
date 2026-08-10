@@ -414,7 +414,11 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             [self rebuildRowModels];
             return;
         }
-        [CDRSharedLog log:[NSString stringWithFormat:@"%@: FAILED — %@", bundleID, error.localizedDescription]];
+        NSMutableString *msg = [NSMutableString stringWithFormat:@"%@: FAILED — %@", bundleID, error.localizedDescription];
+        for (NSError *e = error.userInfo[NSUnderlyingErrorKey]; e; e = e.userInfo[NSUnderlyingErrorKey]) {
+            [msg appendFormat:@"\n    ↳ %@ (%@ %ld)", e.localizedDescription, e.domain, (long)e.code];
+        }
+        [CDRSharedLog log:msg];
         [self logVendorEscapeHatch:error.userInfo[CDRErrorVendorURLKey] forBundleID:bundleID];
         self.lastErrors[bundleID] = error;
         [self.presenter notifyInstallFailedForAppNamed:appName bundleID:bundleID error:error

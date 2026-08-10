@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		F99BBD293029701F0003DD90 /* CDRPrivilegedHelper in Copy Helper Tool */ = {isa = PBXBuildFile; fileRef = F99BBD2030296C160003DD90 /* CDRPrivilegedHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		F90011C9300DBCBF006DE54D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,17 +25,83 @@
 			remoteGlobalIDString = F90011B6300DBCBE006DE54D;
 			remoteInfo = Conductor;
 		};
+		F99BBD2D302970790003DD90 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F90011AF300DBCBE006DE54D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F99BBD1F30296C160003DD90;
+			remoteInfo = CDRPrivilegedHelper;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F99BBD1E30296C160003DD90 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		F99BBD2830296FA50003DD90 /* Copy Helper Tool */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/HelperTools;
+			dstSubfolderSpec = 1;
+			files = (
+				F99BBD293029701F0003DD90 /* CDRPrivilegedHelper in Copy Helper Tool */,
+			);
+			name = "Copy Helper Tool";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F99BBD2A302970330003DD90 /* Copy Helper Plist */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+			);
+			name = "Copy Helper Plist";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		F90011B7300DBCBE006DE54D /* Conductor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Conductor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F90011C8300DBCBF006DE54D /* ConductorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConductorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F90011D2300DBCBF006DE54D /* ConductorUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConductorUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F99BBD2030296C160003DD90 /* CDRPrivilegedHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = CDRPrivilegedHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		F99BBD33302984300003DD90 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F99BBD30302983F50003DD90 /* Exceptions for "Conductor" folder in "CDRPrivilegedHelper" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Engine/CDRCodeSignature.m,
+				Engine/CDRErrors.m,
+			);
+			target = F99BBD1F30296C160003DD90 /* CDRPrivilegedHelper */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		F99BBD2C302970600003DD90 /* Exceptions for "CDRPrivilegedHelper" folder in "Copy Helper Plist" phase from "Conductor" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = F99BBD2A302970330003DD90 /* Copy Helper Plist */;
+			membershipExceptions = (
+				com.ranvel.Conductor.PrivilegedHelper.plist,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		F90011B9300DBCBE006DE54D /* Conductor */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F99BBD30302983F50003DD90 /* Exceptions for "Conductor" folder in "CDRPrivilegedHelper" target */,
+			);
 			path = Conductor;
 			sourceTree = "<group>";
 		};
@@ -43,6 +113,14 @@
 		F90011D5300DBCBF006DE54D /* ConductorUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ConductorUITests;
+			sourceTree = "<group>";
+		};
+		F99BBD2130296C160003DD90 /* CDRPrivilegedHelper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F99BBD2C302970600003DD90 /* Exceptions for "CDRPrivilegedHelper" folder in "Copy Helper Plist" phase from "Conductor" target */,
+			);
+			path = CDRPrivilegedHelper;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +147,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F99BBD1D30296C160003DD90 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -78,6 +163,8 @@
 				F90011B9300DBCBE006DE54D /* Conductor */,
 				F90011CB300DBCBF006DE54D /* ConductorTests */,
 				F90011D5300DBCBF006DE54D /* ConductorUITests */,
+				F99BBD2130296C160003DD90 /* CDRPrivilegedHelper */,
+				F99BBD32302984300003DD90 /* Frameworks */,
 				F90011B8300DBCBE006DE54D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -88,8 +175,17 @@
 				F90011B7300DBCBE006DE54D /* Conductor.app */,
 				F90011C8300DBCBF006DE54D /* ConductorTests.xctest */,
 				F90011D2300DBCBF006DE54D /* ConductorUITests.xctest */,
+				F99BBD2030296C160003DD90 /* CDRPrivilegedHelper */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		F99BBD32302984300003DD90 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				F99BBD33302984300003DD90 /* Security.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -102,10 +198,13 @@
 				F90011B3300DBCBE006DE54D /* Sources */,
 				F90011B4300DBCBE006DE54D /* Frameworks */,
 				F90011B5300DBCBE006DE54D /* Resources */,
+				F99BBD2830296FA50003DD90 /* Copy Helper Tool */,
+				F99BBD2A302970330003DD90 /* Copy Helper Plist */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				F99BBD2E302970790003DD90 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				F90011B9300DBCBE006DE54D /* Conductor */,
@@ -163,6 +262,28 @@
 			productReference = F90011D2300DBCBF006DE54D /* ConductorUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		F99BBD1F30296C160003DD90 /* CDRPrivilegedHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F99BBD2430296C160003DD90 /* Build configuration list for PBXNativeTarget "CDRPrivilegedHelper" */;
+			buildPhases = (
+				F99BBD1C30296C160003DD90 /* Sources */,
+				F99BBD1D30296C160003DD90 /* Frameworks */,
+				F99BBD1E30296C160003DD90 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F99BBD2130296C160003DD90 /* CDRPrivilegedHelper */,
+			);
+			name = CDRPrivilegedHelper;
+			packageProductDependencies = (
+			);
+			productName = CDRPrivilegedHelper;
+			productReference = F99BBD2030296C160003DD90 /* CDRPrivilegedHelper */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -183,6 +304,9 @@
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = F90011B6300DBCBE006DE54D;
 					};
+					F99BBD1F30296C160003DD90 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 				};
 			};
 			buildConfigurationList = F90011B2300DBCBE006DE54D /* Build configuration list for PBXProject "Conductor" */;
@@ -202,6 +326,7 @@
 				F90011B6300DBCBE006DE54D /* Conductor */,
 				F90011C7300DBCBF006DE54D /* ConductorTests */,
 				F90011D1300DBCBF006DE54D /* ConductorUITests */,
+				F99BBD1F30296C160003DD90 /* CDRPrivilegedHelper */,
 			);
 		};
 /* End PBXProject section */
@@ -252,6 +377,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F99BBD1C30296C160003DD90 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -264,6 +396,11 @@
 			isa = PBXTargetDependency;
 			target = F90011B6300DBCBE006DE54D /* Conductor */;
 			targetProxy = F90011D3300DBCBF006DE54D /* PBXContainerItemProxy */;
+		};
+		F99BBD2E302970790003DD90 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F99BBD1F30296C160003DD90 /* CDRPrivilegedHelper */;
+			targetProxy = F99BBD2D302970790003DD90 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -511,6 +648,36 @@
 			};
 			name = Release;
 		};
+		F99BBD2530296C160003DD90 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = F252L9GUBW;
+				ENABLE_HARDENED_RUNTIME = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Conductor/Engine";
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ranvel.Conductor.CDRPrivilegedHelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+			};
+			name = Debug;
+		};
+		F99BBD2630296C160003DD90 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = F252L9GUBW;
+				ENABLE_HARDENED_RUNTIME = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Conductor/Engine";
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ranvel.Conductor.CDRPrivilegedHelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -546,6 +713,15 @@
 			buildConfigurations = (
 				F90011E3300DBCBF006DE54D /* Debug */,
 				F90011E4300DBCBF006DE54D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F99BBD2430296C160003DD90 /* Build configuration list for PBXNativeTarget "CDRPrivilegedHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F99BBD2530296C160003DD90 /* Debug */,
+				F99BBD2630296C160003DD90 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
