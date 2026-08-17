@@ -55,6 +55,8 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 @property (nonatomic) NSMutableDictionary<NSString *, NSNumber *> *operationPhases;
 /// Operations parked in update-on-quit (set when that reply is chosen).
 @property (nonatomic) NSMutableSet<NSString *> *parkedBundleIDs;
+/// bundleID → last reported download fraction, for the aggregate progress bar.
+@property (nonatomic) NSMutableDictionary<NSString *, NSNumber *> *downloadFractions;
 /// Whether an operation reached the download phase. Distinguishes the two
 /// CDRErrorDowngradeRefused sources: the pre-download last-moment re-check (a
 /// retraction — State A) vs the staged-bundle version gate (a replayed older
@@ -88,6 +90,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     _operations = [NSMutableDictionary dictionary];
     _operationPhases = [NSMutableDictionary dictionary];
     _parkedBundleIDs = [NSMutableSet set];
+    _downloadFractions = [NSMutableDictionary dictionary];
     _reachedDownloadBundleIDs = [NSMutableSet set];
     _notifiedRecalledKeys = [NSMutableSet set];
     return self;
@@ -98,6 +101,19 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         if ([reg.bundleID isEqualToString:bundleID]) return reg;
     }
     return nil;
+}
+
+/// Swaps the entry with a matching bundleID in registrations. No-op if absent
+/// (app removed mid-session; the next rescan reconciles).
+- (void)replaceRegistrationForBundleID:(NSString *)bundleID with:(CDRAppRegistration *)registration {
+    NSUInteger idx = [self.registrations indexOfObjectPassingTest:
+        ^BOOL(CDRAppRegistration *reg, NSUInteger i, BOOL *stop) {
+            return [reg.bundleID isEqualToString:bundleID];
+        }];
+    if (idx == NSNotFound) return;
+    NSMutableArray<CDRAppRegistration *> *updated = [self.registrations mutableCopy];
+    updated[idx] = registration;
+    self.registrations = updated;
 }
 
 #pragma mark - Discovery
@@ -131,6 +147,15 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 }
 
 - (void)checkRegistration:(CDRAppRegistration *)reg breakThrough:(BOOL)breakThrough {
+    // The installed version is ephemeral: the bundle may have been replaced
+    // since the last scan (by Conductor itself or out-of-band), so re-read it
+    // from disk before every check — one plist read, no discovery churn.
+    CDRAppRegistration *fresh = [reg registrationByRefreshingInstalledVersion];
+    if (fresh != reg) {
+        [self replaceRegistrationForBundleID:fresh.bundleID with:fresh];
+        [self rebuildRowModels];   // the Installed column corrects even if the fetch then fails
+        reg = fresh;
+    }
     NSString *bundleID = reg.bundleID;
     [CDRSharedLog log:[NSString stringWithFormat:@"%@: fetching manifest from %@ …",
                        bundleID, reg.updateURL.absoluteString]];
@@ -354,10 +379,62 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     NSString *bundleID = op.registration.bundleID;
     self.operationPhases[bundleID] = @(phase);
     if (phase == CDRUpdatePhaseDownloading) [self.reachedDownloadBundleIDs addObject:bundleID];
+    if (phase != CDRUpdatePhaseDownloading) [self.downloadFractions removeObjectForKey:bundleID];
     // A parked wait ends the moment the swap begins.
     if (phase == CDRUpdatePhaseSwapping) [self.parkedBundleIDs removeObject:bundleID];
     [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@ …", bundleID, CDRUpdatePhaseName(phase)]];
     [self rebuildRowModels];
+    [self publishProgress];
+}
+
+- (void)updateOperation:(CDRUpdateOperation *)op didUpdateDownloadProgress:(double)fractionCompleted {
+    self.downloadFractions[op.registration.bundleID] = @(fractionCompleted);
+    [self publishProgress];
+}
+
+/// Folds every live operation into one bar: determinate (mean fraction) while
+/// anything is downloading, indeterminate while otherwise busy, inactive when
+/// idle. Parked update-on-quit waits are excluded — they can sit for days.
+- (void)publishProgress {
+    if (!self.onProgressChanged) return;
+    NSMutableArray<NSString *> *active = [NSMutableArray array];
+    NSMutableArray<NSString *> *downloading = [NSMutableArray array];
+    CDRUpdatePhase lastPhase = CDRUpdatePhaseIdle;
+    for (NSString *bundleID in self.operationPhases) {
+        CDRUpdatePhase phase = self.operationPhases[bundleID].integerValue;
+        if (phase < CDRUpdatePhaseFetching || phase > CDRUpdatePhaseFinishing) continue;
+        if ([self.parkedBundleIDs containsObject:bundleID]) continue;
+        [active addObject:bundleID];
+        lastPhase = phase;
+        if (phase == CDRUpdatePhaseDownloading) [downloading addObject:bundleID];
+    }
+    if (active.count == 0) {
+        self.onProgressChanged(NO, 0, nil);
+        return;
+    }
+    if (downloading.count > 0) {
+        double sum = 0;
+        for (NSString *bundleID in downloading) sum += self.downloadFractions[bundleID].doubleValue;
+        double fraction = sum / downloading.count;
+        NSString *detail = (downloading.count == 1)
+            ? [NSString stringWithFormat:@"Downloading %@ — %.0f%%",
+               [self displayNameForBundleID:downloading.firstObject], fraction * 100]
+            : [NSString stringWithFormat:@"Downloading %lu updates — %.0f%%",
+               (unsigned long)downloading.count, fraction * 100];
+        self.onProgressChanged(YES, fraction, detail);
+        return;
+    }
+    NSString *detail = (active.count == 1)
+        ? [NSString stringWithFormat:@"%@ — %@…",
+           [self displayNameForBundleID:active.firstObject], CDRUpdatePhaseName(lastPhase)]
+        : [NSString stringWithFormat:@"Updating %lu apps…", (unsigned long)active.count];
+    self.onProgressChanged(YES, -1, detail);
+}
+
+- (NSString *)displayNameForBundleID:(NSString *)bundleID {
+    NSString *name = [self registrationForBundleID:bundleID]
+        .appURL.lastPathComponent.stringByDeletingPathExtension;
+    return name ?: bundleID;
 }
 
 - (void)updateOperation:(CDRUpdateOperation *)op logMessage:(NSString *)message {
@@ -388,6 +465,8 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     [self.operations removeObjectForKey:bundleID];
     [self.operationPhases removeObjectForKey:bundleID];
     [self.parkedBundleIDs removeObject:bundleID];
+    [self.downloadFractions removeObjectForKey:bundleID];
+    [self publishProgress];
 
     if (error) {
         if ([error.domain isEqualToString:CDRErrorDomain] && error.code == CDRErrorUpdateCancelled) {
@@ -429,7 +508,16 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     }
 
     [CDRSharedLog log:[NSString stringWithFormat:@"%@: update installed successfully.", bundleID]];
-    NSString *installedVersion = self.knownManifests[bundleID].version;
+    // Push the just-installed version into the registration immediately — the
+    // staged bundle's Info.plist is the authority, never the manifest (which
+    // only serves as fallback copy for the notification when Verify's capture
+    // is somehow absent).
+    NSString *installedVersion = op.stagedShortVersion ?: self.knownManifests[bundleID].version;
+    if (op.stagedShortVersion) {
+        [self replaceRegistrationForBundleID:bundleID
+            with:[op.registration registrationWithInstalledShortVersion:op.stagedShortVersion
+                                                           buildVersion:op.stagedBuildVersion]];
+    }
     [self.knownManifests removeObjectForKey:bundleID];
     [self.lastDecisions removeObjectForKey:bundleID];
     [self.lastManifests removeObjectForKey:bundleID];

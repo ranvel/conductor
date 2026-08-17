@@ -39,6 +39,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSArray<CDRAppRowModel *> *rowModels;
 @property (nonatomic, copy, nullable) void (^onRowModelsChanged)(void);
 
+/// Aggregate operation progress for a single UI bar: fired on phase
+/// transitions and ~2 Hz download ticks, main queue. fraction < 0 means
+/// indeterminate (busy, no byte counts); active == NO means nothing is in
+/// flight (hide the bar). Deliberately separate from onRowModelsChanged so
+/// download ticks never trigger table reloads. Parked update-on-quit waits
+/// are not "active" — they can sit for days and their row already says so.
+@property (nonatomic, copy, nullable) void (^onProgressChanged)
+    (BOOL active, double fraction, NSString *_Nullable detail);
+
 /// Disk discovery + session filter. Cheap, synchronous, no network.
 - (void)rescan;
 

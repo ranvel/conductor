@@ -52,6 +52,9 @@ typedef NS_ENUM(NSInteger, CDRQuitDecision) {
       appWasQuitByFlow:(BOOL)wasQuit;
 @optional
 - (void)updateOperation:(CDRUpdateOperation *)op logMessage:(NSString *)message;
+/// Byte-level download progress (0…1). Main queue, ~2 Hz, only while the
+/// operation is in CDRUpdatePhaseDownloading.
+- (void)updateOperation:(CDRUpdateOperation *)op didUpdateDownloadProgress:(double)fractionCompleted;
 @end
 
 /// The orchestrator (replace-flow.md §§0–7): verify → stage → quit → swap →
@@ -84,6 +87,13 @@ typedef NS_ENUM(NSInteger, CDRQuitDecision) {
 
 @property (nonatomic, readonly) CDRUpdatePhase phase;
 @property (nonatomic, readonly) CDRAppRegistration *registration;
+
+/// Versions read from the staged bundle's Info.plist during Verify — on
+/// success, the versions now installed. nil until Verify passes. Set on the
+/// work queue; safe to read from the terminal delegate callback (the dispatch
+/// to main establishes happens-before).
+@property (nonatomic, readonly, nullable) NSString *stagedShortVersion;
+@property (nonatomic, readonly, nullable) NSString *stagedBuildVersion;
 
 /// YES while parked in AwaitingQuit after an UpdateOnQuit decision.
 @property (atomic, readonly, getter=isParkedAwaitingQuit) BOOL parkedAwaitingQuit;

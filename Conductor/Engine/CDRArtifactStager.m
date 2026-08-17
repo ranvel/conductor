@@ -9,7 +9,14 @@
 @implementation CDRArtifactStager
 
 + (NSURL *)stagingRootNearDestination:(NSURL *)destinationURL {
-    NSURL *parent = destinationURL.hasDirectoryPath ? destinationURL : destinationURL.URLByDeletingLastPathComponent;
+    // The destination is either the app bundle being replaced or a containing
+    // folder like /Applications. hasDirectoryPath cannot tell those apart: an
+    // .app bundle IS a directory, and a file URL carries the directory hint
+    // whenever its path exists as one — which routed staging *inside* the very
+    // bundle the swap replaces, and renamex_np refuses to swap a directory
+    // with its own descendant (EINVAL). Discriminate by extension instead.
+    BOOL isBundle = [destinationURL.pathExtension isEqualToString:@"app"];
+    NSURL *parent = isBundle ? destinationURL.URLByDeletingLastPathComponent : destinationURL;
     return [parent URLByAppendingPathComponent:@".conductor-staging" isDirectory:YES];
 }
 

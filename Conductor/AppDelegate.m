@@ -11,6 +11,7 @@
 #import "CDRDevModeSession.h"
 #import "CDRManifestFetcher.h"
 #import "CDRArtifactStager.h"
+#import "CDRLogWindowController.h"
 #import "CDRMenuBarController.h"
 #import "CDRNotificationPresenter.h"
 #import "CDRScanScheduler.h"
@@ -31,6 +32,7 @@
 @property (nonatomic) CDRNotificationPresenter *notificationPresenter;
 @property (nonatomic) CDRScanScheduler *scanScheduler;
 @property (nonatomic, nullable) CDRSettingsWindowController *settingsWindowController;
+@property (nonatomic, nullable) CDRLogWindowController *logWindowController;
 /// Set while applicationShouldTerminate: is deferred on in-flight operations.
 @property (nonatomic) BOOL terminationPending;
 @end
@@ -78,6 +80,9 @@
     self.updateController.onRowModelsChanged = ^{
         [weakSelf rowModelsChanged];
     };
+    self.updateController.onProgressChanged = ^(BOOL active, double fraction, NSString *detail) {
+        [weakSelf.statusWindowController setProgressActive:active fraction:fraction detail:detail];
+    };
     self.statusWindowController.onRowAction = onRowAction;
     self.statusWindowController.onCheckAll = onCheckAll;
     self.menuBarController.onRowAction = onRowAction;
@@ -89,6 +94,7 @@
         [weakSelf showSettingsWindow];
     };
     [self wireAppMenuSettingsItem];
+    [self wireWindowMenuLogItem];
 
     self.notificationPresenter = [[CDRNotificationPresenter alloc] init];
     [self.notificationPresenter requestProvisionalAuthorization];
@@ -189,6 +195,30 @@
     [NSApp activateIgnoringOtherApps:YES];
     [self.settingsWindowController showWindow:nil];
     [self.settingsWindowController.window makeKeyAndOrderFront:nil];
+}
+
+- (void)showLogWindow {
+    if (!self.logWindowController) {
+        self.logWindowController = [[CDRLogWindowController alloc] init];
+    }
+    [NSApp activateIgnoringOtherApps:YES];
+    [self.logWindowController showWindow:nil];
+    [self.logWindowController.window makeKeyAndOrderFront:nil];
+}
+
+/// The activity log's menu entry point (Window ▸ Activity Log, ⌘L) — the
+/// window itself is created lazily on first show.
+- (void)wireWindowMenuLogItem {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Activity Log"
+                                                  action:@selector(logMenuItemChosen:)
+                                           keyEquivalent:@"l"];
+    item.target = self;
+    [NSApp.windowsMenu insertItem:item atIndex:0];
+    [NSApp.windowsMenu insertItem:[NSMenuItem separatorItem] atIndex:1];
+}
+
+- (void)logMenuItemChosen:(id)sender {
+    [self showLogWindow];
 }
 
 /// The xib's template "Preferences…" item ships with no action; make it the

@@ -5,23 +5,22 @@
 
 #import "CDRStatusWindowController.h"
 #import "CDRDevModeSession.h"
-#import "CDRSharedLog.h"
 
 @interface CDRStatusWindowController () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @property (nonatomic) CDRDevModeSession *session;
 @property (nonatomic) NSTableView *tableView;
-@property (nonatomic) NSTextView *logView;
 @property (nonatomic) NSButton *checkButton;
 @property (nonatomic) NSButton *checkAllButton;
 @property (nonatomic) NSButton *installButton;
-@property (nonatomic) id logObserver;
+@property (nonatomic) NSProgressIndicator *progressBar;
+@property (nonatomic) NSTextField *progressLabel;
 @end
 
 @implementation CDRStatusWindowController
 
 - (instancetype)initWithSession:(CDRDevModeSession *)session {
     NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 720, 480)
+        initWithContentRect:NSMakeRect(0, 0, 720, 340)
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                              NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
                     backing:NSBackingStoreBuffered
@@ -35,23 +34,7 @@
     _session = session;
     _rowModels = @[];
     [self buildContentView];
-
-    for (NSString *line in [CDRSharedLog bufferedLines]) {
-        [self appendLine:line];
-    }
-    __weak typeof(self) weakSelf = self;
-    _logObserver = [[NSNotificationCenter defaultCenter]
-        addObserverForName:CDRSharedLogDidAppendNotification
-                    object:nil
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *note) {
-        [weakSelf appendLine:note.userInfo[CDRSharedLogLineKey]];
-    }];
     return self;
-}
-
-- (void)dealloc {
-    if (_logObserver) [[NSNotificationCenter defaultCenter] removeObserver:_logObserver];
 }
 
 - (void)buildContentView {
@@ -128,46 +111,82 @@
     self.checkAllButton = [NSButton buttonWithTitle:@"Check All" target:self action:@selector(checkAllClicked:)];
     self.installButton = [NSButton buttonWithTitle:@"Install" target:self action:@selector(installClicked:)];
     self.installButton.enabled = NO;
+    // Clicking an action button must not steal key focus from the table — the
+    // selection highlight would drop to gray and read as "selection lost".
+    self.checkButton.refusesFirstResponder = YES;
+    self.checkAllButton.refusesFirstResponder = YES;
+    self.installButton.refusesFirstResponder = YES;
     [buttons addArrangedSubview:self.checkButton];
     [buttons addArrangedSubview:self.checkAllButton];
     [buttons addArrangedSubview:self.installButton];
     [stack addArrangedSubview:buttons];
 
-    self.logView = [[NSTextView alloc] init];
-    self.logView.editable = NO;
-    self.logView.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    self.logView.autoresizingMask = NSViewWidthSizable;
-    NSScrollView *logScroll = [[NSScrollView alloc] init];
-    logScroll.documentView = self.logView;
-    logScroll.hasVerticalScroller = YES;
-    logScroll.borderType = NSBezelBorder;
-    logScroll.translatesAutoresizingMaskIntoConstraints = NO;
-    [stack addArrangedSubview:logScroll];
-    [logScroll.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-24].active = YES;
-    [logScroll.heightAnchor constraintGreaterThanOrEqualToConstant:120].active = YES;
+    NSStackView *progressRow = [[NSStackView alloc] init];
+    progressRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    progressRow.spacing = 8;
+    self.progressLabel = [NSTextField labelWithString:@""];
+    self.progressLabel.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    self.progressLabel.textColor = [NSColor secondaryLabelColor];
+    self.progressLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.progressLabel setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.progressBar = [[NSProgressIndicator alloc] init];
+    self.progressBar.style = NSProgressIndicatorStyleBar;
+    self.progressBar.minValue = 0;
+    self.progressBar.maxValue = 1;
+    self.progressBar.indeterminate = NO;
+    self.progressBar.hidden = YES;
+    [progressRow addArrangedSubview:self.progressLabel];
+    [progressRow addArrangedSubview:self.progressBar];
+    [stack addArrangedSubview:progressRow];
+    [progressRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-24].active = YES;
+    // Reserve the row's height even while empty so the table doesn't jump
+    // every time an operation starts or ends.
+    [progressRow.heightAnchor constraintGreaterThanOrEqualToConstant:20].active = YES;
 
     [self updateButtonState];
+}
+
+#pragma mark - Progress
+
+- (void)setProgressActive:(BOOL)active fraction:(double)fraction detail:(NSString *)detail {
+    if (!active) {
+        [self.progressBar stopAnimation:nil];
+        self.progressBar.hidden = YES;
+        self.progressLabel.stringValue = @"";
+        return;
+    }
+    self.progressBar.hidden = NO;
+    self.progressLabel.stringValue = detail ?: @"";
+    if (fraction < 0) {
+        self.progressBar.indeterminate = YES;
+        [self.progressBar startAnimation:nil];
+    } else {
+        [self.progressBar stopAnimation:nil];
+        self.progressBar.indeterminate = NO;
+        self.progressBar.doubleValue = fraction;
+    }
 }
 
 #pragma mark - Public
 
 - (void)setRowModels:(NSArray<CDRAppRowModel *> *)rowModels {
+    // Selection is keyed by bundle ID, not row index: models are rebuilt
+    // wholesale on every state change and a rescan may reorder rows.
+    NSString *selectedBundleID = [self selectedRow].bundleID;
     _rowModels = [rowModels copy];
     [self.tableView reloadData];
+    if (selectedBundleID) {
+        NSUInteger idx = [_rowModels indexOfObjectPassingTest:
+            ^BOOL(CDRAppRowModel *model, NSUInteger i, BOOL *stop) {
+                return [model.bundleID isEqualToString:selectedBundleID];
+            }];
+        if (idx != NSNotFound) {
+            [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:idx]
+                        byExtendingSelection:NO];
+        }
+    }
     [self updateButtonState];
-}
-
-#pragma mark - Log rendering
-
-- (void)appendLine:(NSString *)line {
-    if (!line) return;
-    NSAttributedString *as = [[NSAttributedString alloc] initWithString:[line stringByAppendingString:@"\n"]
-                                                             attributes:@{
-        NSFontAttributeName: self.logView.font ?: [NSFont systemFontOfSize:11],
-        NSForegroundColorAttributeName: [NSColor labelColor],
-    }];
-    [self.logView.textStorage appendAttributedString:as];
-    [self.logView scrollRangeToVisible:NSMakeRange(self.logView.string.length, 0)];
 }
 
 #pragma mark - Actions

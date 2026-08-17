@@ -14,9 +14,25 @@ static const NSInteger kCDRSupportedConductorJSONVersion = 1;
     return @"Contents/Resources/conductor.json";
 }
 
++ (NSString *)infoPlistRelativePath {
+    return @"Contents/Info.plist";
+}
+
+/// NSBundle caches the info dictionary per path for the process lifetime, so a
+/// bundle swapped in place would read back its pre-swap identity forever.
+/// Always read the plist directly.
++ (nullable NSDictionary *)infoPlistForAppAtURL:(NSURL *)appURL {
+    return [NSDictionary dictionaryWithContentsOfURL:
+        [appURL URLByAppendingPathComponent:[self infoPlistRelativePath]]];
+}
+
+static NSString *_Nullable CDRStringOrNil(id value) {
+    return [value isKindOfClass:[NSString class]] && [value length] > 0 ? value : nil;
+}
+
 + (nullable instancetype)registrationForAppAtURL:(NSURL *)appURL error:(NSError **)error {
-    NSBundle *bundle = [NSBundle bundleWithURL:appURL];
-    NSString *bundleID = bundle.bundleIdentifier;
+    NSDictionary *info = [self infoPlistForAppAtURL:appURL];
+    NSString *bundleID = CDRStringOrNil(info[@"CFBundleIdentifier"]);
 
     NSURL *jsonURL = [appURL URLByAppendingPathComponent:[self conductorJSONRelativePath]];
     NSData *data = [NSData dataWithContentsOfURL:jsonURL];
@@ -54,9 +70,9 @@ static const NSInteger kCDRSupportedConductorJSONVersion = 1;
         return nil;
     }
 
-    NSString *shortVersion = [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-    NSString *buildVersion = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"];
-    if (bundleID.length == 0 || ![shortVersion isKindOfClass:[NSString class]] || shortVersion.length == 0) {
+    NSString *shortVersion = CDRStringOrNil(info[@"CFBundleShortVersionString"]);
+    NSString *buildVersion = CDRStringOrNil(info[@"CFBundleVersion"]);
+    if (bundleID.length == 0 || shortVersion.length == 0) {
         if (error) *error = CDRError(CDRErrorConductorJSONMalformed, bundleID, nil, nil);
         return nil;
     }
@@ -65,7 +81,7 @@ static const NSInteger kCDRSupportedConductorJSONVersion = 1;
     reg->_appURL = appURL;
     reg->_bundleID = [bundleID copy];
     reg->_installedShortVersion = [shortVersion copy];
-    reg->_installedBuildVersion = [buildVersion isKindOfClass:[NSString class]] && buildVersion.length > 0 ? [buildVersion copy] : nil;
+    reg->_installedBuildVersion = [buildVersion copy];
     reg->_updateURL = updateURL;
 
     NSString *fallbackString = dict[@"fallback_url"];
@@ -78,6 +94,34 @@ static const NSInteger kCDRSupportedConductorJSONVersion = 1;
     }
 
     return reg;
+}
+
+- (instancetype)registrationWithInstalledShortVersion:(NSString *)shortVersion
+                                         buildVersion:(nullable NSString *)buildVersion {
+    CDRAppRegistration *reg = [[CDRAppRegistration alloc] init];
+    reg->_appURL = _appURL;
+    reg->_bundleID = _bundleID;
+    reg->_installedShortVersion = [shortVersion copy];
+    reg->_installedBuildVersion = [buildVersion copy];
+    reg->_updateURL = _updateURL;
+    reg->_fallbackURL = _fallbackURL;
+    reg->_vendorURL = _vendorURL;
+    return reg;
+}
+
+- (instancetype)registrationByRefreshingInstalledVersion {
+    NSDictionary *info = [[self class] infoPlistForAppAtURL:self.appURL];
+    NSString *bundleID = CDRStringOrNil(info[@"CFBundleIdentifier"]);
+    NSString *shortVersion = CDRStringOrNil(info[@"CFBundleShortVersionString"]);
+    NSString *buildVersion = CDRStringOrNil(info[@"CFBundleVersion"]);
+    // Unreadable plist or a different bundle at this path (removed/replaced
+    // out-of-band): not a version change — leave it to the next full rescan.
+    if (![bundleID isEqualToString:self.bundleID] || shortVersion.length == 0) return self;
+    BOOL sameShort = [shortVersion isEqualToString:self.installedShortVersion];
+    BOOL sameBuild = (buildVersion == self.installedBuildVersion)
+        || [buildVersion isEqualToString:self.installedBuildVersion];
+    if (sameShort && sameBuild) return self;
+    return [self registrationWithInstalledShortVersion:shortVersion buildVersion:buildVersion];
 }
 
 @end

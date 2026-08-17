@@ -131,7 +131,12 @@ static NSError *OSStatusError(OSStatus status, CFErrorRef _Nullable cfError) {
     }
 
     CFErrorRef validityError = NULL;
-    status = SecCodeCheckValidityWithErrors(code, kCDRValidationFlags, requirement, &validityError);
+    // Dynamic validation of a live process: kCDRValidationFlags carries the
+    // static-only kSecCSCheckAllArchitectures, which SecCodeCheckValidity rejects
+    // with errSecCSInvalidFlags (-67070) — that would reject every client. Use
+    // default flags here; the requirement string (identifier + anchor apple
+    // generic + leaf OU) is what actually pins trust, not the flags.
+    status = SecCodeCheckValidityWithErrors(code, kSecCSDefaultFlags, requirement, &validityError);
     CFRelease(requirement);
     CFRelease(code);
 

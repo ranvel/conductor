@@ -81,7 +81,26 @@ static NSString * const kPinnedTeamID     = @"F252L9GUBW";
                              error:&replaceError];
 
     if (!ok) {
-        reply(NO, nil, replaceError.localizedDescription ?: @"replaceItemAtURL failed.");
+        // The reply crosses an XPC boundary, so the NSError object itself can't
+        // travel — flatten the full underlying-error chain (domain, code, and
+        // any recorded paths) into the message. The deepest POSIX errno is the
+        // diagnostic payload; the top-level localized copy alone hides it.
+        NSMutableString *chain = [NSMutableString string];
+        NSError *e = replaceError;
+        NSUInteger depth = 0;
+        while (e && depth < 8) {
+            [chain appendFormat:@"[%lu] %@ %ld — %@",
+                (unsigned long)depth, e.domain, (long)e.code,
+                e.localizedDescription];
+            NSString *path = e.userInfo[NSFilePathErrorKey]
+                ?: [e.userInfo[NSURLErrorKey] path]
+                ?: e.userInfo[@"NSDestinationFilePath"];
+            if (path) [chain appendFormat:@" (path: %@)", path];
+            [chain appendString:@"\n"];
+            e = e.userInfo[NSUnderlyingErrorKey];
+            depth++;
+        }
+        reply(NO, nil, chain.length ? chain : @"replaceItemAtURL failed.");
         return;
     }
 

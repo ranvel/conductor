@@ -65,6 +65,29 @@
     XCTAssertFalse([[NSFileManager defaultManager] fileExistsAtPath:staging.path]);
 }
 
+/// Regression: an installed .app destination exists on disk, so its file URL
+/// carries the directory hint (an app bundle IS a directory) — which used to
+/// route staging *inside* the bundle the swap was about to replace, and
+/// renamex_np refuses to swap a directory with its own descendant (EINVAL).
+/// Staging must land next to the bundle, never inside it.
+- (void)testStagingRootForAppBundleDestinationIsSiblingNotInside {
+    NSURL *apps = [self.root URLByAppendingPathComponent:@"Applications" isDirectory:YES];
+    [[NSFileManager defaultManager] createDirectoryAtURL:apps
+                             withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSURL *bundle = [self makeDummyAppIn:apps];
+    // Re-derive the URL the way production sees it: from the on-disk path,
+    // which picks up the trailing-slash directory hint that triggered the bug.
+    NSURL *destination = [NSURL fileURLWithPath:bundle.path];
+    XCTAssertTrue(destination.hasDirectoryPath,
+        @"precondition: an existing bundle's URL must carry the directory hint");
+
+    NSURL *stagingRoot = [CDRArtifactStager stagingRootNearDestination:destination];
+    XCTAssertEqualObjects(stagingRoot.path,
+        [apps URLByAppendingPathComponent:@".conductor-staging"].path);
+    XCTAssertFalse([stagingRoot.path hasPrefix:bundle.path],
+        @"staging inside the destination bundle makes the atomic swap impossible");
+}
+
 - (void)testZipExtractionFindsApp {
     NSURL *sourceDir = [self.root URLByAppendingPathComponent:@"src" isDirectory:YES];
     [[NSFileManager defaultManager] createDirectoryAtURL:sourceDir

@@ -15,6 +15,7 @@
 #import "CDRQuarantine.h"
 #import "CDRQuitMonitor.h"
 #import "CDRAtomicSwapper.h"
+#import "CDRPrivilegedHelperManager.h"
 #import "CDRVersion.h"
 #import "CDRErrors.h"
 
@@ -47,12 +48,13 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
 @property (nonatomic) CDRArtifactStager *stager;
 @property (nonatomic) CDRQuitMonitor *quitMonitor;
 @property (nonatomic) CDRAtomicSwapper *swapper;
+@property (nonatomic) CDRPrivilegedHelperManager *helperManager;
 
 @property (nonatomic, nullable) NSURL *stagingURL;
 @property (nonatomic, nullable) NSString *pinnedTeamID;
 /// Captured in stepVerify: for the pre-swap freshness re-guard.
-@property (nonatomic, nullable) NSString *stagedShortVersion;
-@property (nonatomic, nullable) NSString *stagedBuildVersion;
+@property (nonatomic, readwrite, nullable) NSString *stagedShortVersion;
+@property (nonatomic, readwrite, nullable) NSString *stagedBuildVersion;
 @property (atomic, readwrite, getter=isParkedAwaitingQuit) BOOL parkedAwaitingQuit;
 @property (nonatomic) BOOL appWasQuitByFlow;
 @property (nonatomic) BOOL started;
@@ -76,6 +78,9 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
     _stager = [[CDRArtifactStager alloc] init];
     _quitMonitor = [[CDRQuitMonitor alloc] init];
     _swapper = [[CDRAtomicSwapper alloc] init];
+    // Lazily used: obtaining the singleton registers nothing (registration
+    // happens inside installHelperWithError:, only when a swap needs root).
+    _helperManager = [CDRPrivilegedHelperManager sharedManager];
     _phase = CDRUpdatePhaseIdle;
     return self;
 }
@@ -195,11 +200,20 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
     }
 
     [self log:@"%@: downloading %@", self.registration.bundleID, self.manifest.artifactURL.absoluteString];
+    id<CDRUpdateOperationDelegate> delegate = self.delegate;
+    void (^progress)(double) = nil;
+    if ([delegate respondsToSelector:@selector(updateOperation:didUpdateDownloadProgress:)]) {
+        progress = ^(double fractionCompleted) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [delegate updateOperation:self didUpdateDownloadProgress:fractionCompleted];
+            });
+        };
+    }
     [self.downloader downloadArtifactAtURL:self.manifest.artifactURL
                                forBundleID:self.registration.bundleID
                         toStagingDirectory:self.stagingURL
                             expectedSHA256:self.manifest.sha256
-                                  progress:nil
+                                  progress:progress
                                 completion:^(NSURL *fileURL, NSError *dlError) {
         dispatch_async(self.workQueue, ^{
             if (!fileURL) {
@@ -232,8 +246,14 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
     NSString *bundleID = self.registration.bundleID;
 
     // 3.1 Bundle ID match — TCC grants and user expectations key on it.
-    NSBundle *staged = [NSBundle bundleWithURL:stagedApp];
-    NSString *stagedBundleID = staged.bundleIdentifier;
+    // Read the staged Info.plist directly: NSBundle caches per URL for the
+    // process lifetime, and the staging path is deterministic, so a second
+    // attempt for the same app would otherwise verify against the first
+    // attempt's cached identity.
+    NSDictionary *stagedInfo = [NSDictionary dictionaryWithContentsOfURL:
+        [stagedApp URLByAppendingPathComponent:@"Contents/Info.plist"]];
+    NSString *stagedBundleID = [stagedInfo[@"CFBundleIdentifier"] isKindOfClass:[NSString class]]
+        ? stagedInfo[@"CFBundleIdentifier"] : nil;
     if (![stagedBundleID isEqualToString:bundleID]) {
         [self failWithError:CDRError(CDRErrorBundleIDMismatch, bundleID, nil, nil)];
         return;
@@ -241,8 +261,9 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
 
     // 3.2 Version sanity — from the staged Info.plist, never the manifest.
     // Load-bearing against replay of an older validly-signed build.
-    NSString *stagedShort = [staged objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-    NSString *stagedBuild = [staged objectForInfoDictionaryKey:@"CFBundleVersion"];
+    NSString *stagedShort = stagedInfo[@"CFBundleShortVersionString"];
+    NSString *stagedBuild = [stagedInfo[@"CFBundleVersion"] isKindOfClass:[NSString class]]
+        ? stagedInfo[@"CFBundleVersion"] : nil;
     if (![stagedShort isKindOfClass:[NSString class]] || stagedShort.length == 0) {
         [self failWithError:CDRError(CDRErrorNotAnUpgrade, bundleID, nil, nil)];
         return;
@@ -393,15 +414,38 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
                                          bundleID:bundleID
                                         backupURL:&backup
                                             error:&error];
-    if (!ok) {
+    if (ok) {
+        [self finishSwapWithBackupURL:backup bundleID:bundleID];
+        return;
+    }
+
+    // The unprivileged swap failed. If privilege might fix it — a root-owned
+    // install, or a TCC/App-Management denial of /Applications — escalate to the
+    // root helper; otherwise fail as before. Either way the installed app is
+    // still untouched (CDRAtomicSwapper guarantees it), so we stay in Swapping
+    // through the escalation rather than adding a phase.
+    if (![self swapErrorWarrantsEscalation:error]) {
         [self failWithError:error];
         return;
     }
+    [self log:@"%@: unprivileged swap failed — %@", bundleID, error.localizedDescription];
+    [self logSwapErrorChain:error bundleID:bundleID];
+    [self escalateSwapForStagedApp:stagedApp bundleID:bundleID];
+}
+
+/// Post-swap tail, shared by the unprivileged and privileged paths so they
+/// converge instead of duplicating: record the swap, move to Finishing, trash
+/// the displaced bundle (non-fatal), clean staging, succeed. `backup` may be nil
+/// (the helper can report success with no displaced bundle to trash).
+- (void)finishSwapWithBackupURL:(nullable NSURL *)backup bundleID:(NSString *)bundleID {
     [self log:@"%@: swapped in new bundle.", bundleID];
 
     [self enterPhase:CDRUpdatePhaseFinishing];
 
     // Displaced bundle → Trash. Non-fatal: on failure it merely lingers.
+    // When the privileged helper performed the swap, the displaced bundle is
+    // root-owned, so recycleURLs: from this user-level process may itself fail —
+    // still non-fatal (a helper-side trash is possible follow-up work).
     if (backup) {
         [self.swapper trashDisplacedBundleAtURL:backup completion:^(NSError *trashError) {
             if (trashError) {
@@ -419,6 +463,86 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
                                    nearDestination:self.registration.appURL];
     self.stagingURL = nil;
     [self succeed];
+}
+
+/// Whether a failed unprivileged swap should be retried through the privileged
+/// helper. YES for an explicit permission classification (EPERM/EACCES/read-only
+/// chain, already mapped to CDRErrorPermissionDenied by CDRAtomicSwapper), or an
+/// NSFileWriteUnknownError (NSCocoaErrorDomain 512) anywhere in the underlying
+/// chain — the shape a TCC/App-Management denial of /Applications takes with no
+/// POSIX error beneath it. Escalating on a 512 the helper also can't fix is
+/// acceptable: we then fail with the helper's error, no worse than failing here.
+/// Errors from before the swap (CDRErrorNotAnUpgrade, verification, …) never
+/// reach this method — it is only consulted at the swap site.
+- (BOOL)swapErrorWarrantsEscalation:(NSError *)error {
+    if ([error.domain isEqualToString:CDRErrorDomain] &&
+        error.code == CDRErrorPermissionDenied) {
+        return YES;
+    }
+    for (NSError *e = error; e; e = e.userInfo[NSUnderlyingErrorKey]) {
+        if ([e.domain isEqualToString:NSCocoaErrorDomain] &&
+            e.code == NSFileWriteUnknownError) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+/// Log every level of an error's underlying chain, so the next swap failure is
+/// one glance at the activity log rather than a screenshot and a grep.
+- (void)logSwapErrorChain:(NSError *)error bundleID:(NSString *)bundleID {
+    NSInteger level = 0;
+    for (NSError *e = error; e; e = e.userInfo[NSUnderlyingErrorKey], level++) {
+        [self log:@"%@:   swap error [%ld] %@ %ld — %@",
+            bundleID, (long)level, e.domain, (long)e.code, e.localizedDescription];
+    }
+}
+
+/// The escalation path: register the helper if needed, then perform the swap as
+/// root over XPC. Stays in CDRUpdatePhaseSwapping throughout. Registration is
+/// lazy — the first time a swap actually needs it — never at launch.
+- (void)escalateSwapForStagedApp:(NSURL *)stagedApp bundleID:(NSString *)bundleID {
+    if (!self.helperManager.isHelperInstalled) {
+        NSError *installError = nil;
+        if (![self.helperManager installHelperWithError:&installError]) {
+            // Includes SMAppServiceStatusRequiresApproval: the manager has already
+            // opened System Settings › Login Items and handed back an actionable
+            // error. Fail with it — do not block/poll for approval; the next
+            // update attempt goes through the helper.
+            [self log:@"%@: %@", bundleID, installError.localizedDescription];
+            [self failWithError:installError];
+            return;
+        }
+        [self log:@"%@: privileged helper registered.", bundleID];
+    }
+
+    [self log:@"%@: escalating to the privileged helper.", bundleID];
+
+    // XPC delivers the completion on an arbitrary private queue; hop back onto
+    // workQueue before touching the phase machine. Exactly one continuation may
+    // run: the manager funnels its proxy-error and reply paths into a single
+    // completion, but guard the async suspension anyway (the one-shot shape
+    // CDRQuitMonitor uses) — the pipeline's usual return-after-terminal guarantee
+    // does not cover a call that resumes on another queue.
+    // (If privileged swaps fail here with a connection error in a Debug build,
+    // suspect the helper's Team-ID/identifier pinning rejecting a differently
+    // signed client before assuming the wiring is wrong.)
+    __block BOOL finished = NO;
+    [self.helperManager swapBundleAtURL:self.registration.appURL
+                        withStagedAtURL:stagedApp
+                             completion:^(BOOL success, NSURL *backupURL, NSError *swapError) {
+        dispatch_async(self.workQueue, ^{
+            if (finished) return;
+            finished = YES;
+            if (success) {
+                [self log:@"%@: privileged swap succeeded.", bundleID];
+                [self finishSwapWithBackupURL:backupURL bundleID:bundleID];
+            } else {
+                [self log:@"%@: privileged swap failed — %@", bundleID, swapError.localizedDescription];
+                [self failWithError:swapError];
+            }
+        });
+    }];
 }
 
 @end

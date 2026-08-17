@@ -30,6 +30,18 @@ NS_ASSUME_NONNULL_BEGIN
 /// Relative path of the marker file inside a bundle ("Contents/Resources/conductor.json").
 + (NSString *)conductorJSONRelativePath;
 
+/// Copy with the given installed versions; every other field (URLs, bundle ID,
+/// appURL) carried over. Used to push the post-swap version without touching disk.
+- (instancetype)registrationWithInstalledShortVersion:(NSString *)shortVersion
+                                         buildVersion:(nullable NSString *)buildVersion;
+
+/// Fresh copy with the installed versions re-read from Contents/Info.plist on
+/// disk (never NSBundle — it caches per path for the process lifetime).
+/// Returns self (pointer-identical) if the plist is unreadable, the bundle ID
+/// no longer matches (app removed or replaced out-of-band), or nothing changed
+/// — callers can use pointer equality as a cheap "did it change" test.
+- (instancetype)registrationByRefreshingInstalledVersion;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -121,6 +121,84 @@ static NSDictionary *ValidConductorJSON(void) {
     XCTAssertEqual(error.code, CDRErrorConductorJSONMalformed);
 }
 
+#pragma mark - Fresh version reads (NSBundle caches per path; registration must not)
+
+/// The bug behind a stale "Installed" column: NSBundle caches the info
+/// dictionary per path for the process lifetime, so re-registering after an
+/// in-place swap must NOT go through NSBundle.
+- (void)testReRegistrationReadsFreshVersionAfterPlistRewrite {
+    NSURL *appURL = [self makeAppBundleNamed:@"Fresh" infoPlist:ValidInfoPlist() conductorJSON:ValidConductorJSON()];
+    CDRAppRegistration *before = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+    XCTAssertEqualObjects(before.installedShortVersion, @"1.0");
+
+    NSMutableDictionary *info = [ValidInfoPlist() mutableCopy];
+    info[@"CFBundleShortVersionString"] = @"1.1";
+    info[@"CFBundleVersion"] = @"101";
+    [self makeAppBundleNamed:@"Fresh" infoPlist:info conductorJSON:ValidConductorJSON()];
+
+    CDRAppRegistration *after = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+    XCTAssertEqualObjects(after.installedShortVersion, @"1.1");
+    XCTAssertEqualObjects(after.installedBuildVersion, @"101");
+}
+
+- (void)testRefreshingInstalledVersionPicksUpPlistChange {
+    NSURL *appURL = [self makeAppBundleNamed:@"Refresh" infoPlist:ValidInfoPlist() conductorJSON:ValidConductorJSON()];
+    CDRAppRegistration *reg = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+
+    NSMutableDictionary *info = [ValidInfoPlist() mutableCopy];
+    info[@"CFBundleShortVersionString"] = @"2.0";
+    info[@"CFBundleVersion"] = @"200";
+    [self makeAppBundleNamed:@"Refresh" infoPlist:info conductorJSON:ValidConductorJSON()];
+
+    CDRAppRegistration *fresh = [reg registrationByRefreshingInstalledVersion];
+    XCTAssertNotEqual(fresh, reg);
+    XCTAssertEqualObjects(fresh.installedShortVersion, @"2.0");
+    XCTAssertEqualObjects(fresh.installedBuildVersion, @"200");
+    XCTAssertEqualObjects(fresh.bundleID, reg.bundleID);
+    XCTAssertEqualObjects(fresh.appURL, reg.appURL);
+    XCTAssertEqualObjects(fresh.updateURL, reg.updateURL);
+    XCTAssertEqualObjects(fresh.fallbackURL, reg.fallbackURL);
+    XCTAssertEqualObjects(fresh.vendorURL, reg.vendorURL);
+}
+
+- (void)testRefreshingReturnsSelfWhenUnchanged {
+    NSURL *appURL = [self makeAppBundleNamed:@"Same" infoPlist:ValidInfoPlist() conductorJSON:ValidConductorJSON()];
+    CDRAppRegistration *reg = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+    XCTAssertEqual([reg registrationByRefreshingInstalledVersion], reg);
+}
+
+- (void)testRefreshingReturnsSelfWhenPlistMissing {
+    NSURL *appURL = [self makeAppBundleNamed:@"Gone" infoPlist:ValidInfoPlist() conductorJSON:ValidConductorJSON()];
+    CDRAppRegistration *reg = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+    [[NSFileManager defaultManager] removeItemAtURL:appURL error:NULL];
+    XCTAssertEqual([reg registrationByRefreshingInstalledVersion], reg);
+}
+
+- (void)testRefreshingReturnsSelfWhenBundleIDChanged {
+    NSURL *appURL = [self makeAppBundleNamed:@"Swapped" infoPlist:ValidInfoPlist() conductorJSON:ValidConductorJSON()];
+    CDRAppRegistration *reg = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+
+    NSMutableDictionary *info = [ValidInfoPlist() mutableCopy];
+    info[@"CFBundleIdentifier"] = @"com.example.other";
+    info[@"CFBundleShortVersionString"] = @"9.9";
+    [self makeAppBundleNamed:@"Swapped" infoPlist:info conductorJSON:ValidConductorJSON()];
+
+    XCTAssertEqual([reg registrationByRefreshingInstalledVersion], reg);
+}
+
+- (void)testRegistrationWithInstalledVersionCopies {
+    NSURL *appURL = [self makeAppBundleNamed:@"Copied" infoPlist:ValidInfoPlist() conductorJSON:ValidConductorJSON()];
+    CDRAppRegistration *reg = [CDRAppRegistration registrationForAppAtURL:appURL error:NULL];
+    CDRAppRegistration *pushed = [reg registrationWithInstalledShortVersion:@"3.0" buildVersion:nil];
+    XCTAssertEqualObjects(pushed.installedShortVersion, @"3.0");
+    XCTAssertNil(pushed.installedBuildVersion);
+    XCTAssertEqualObjects(pushed.bundleID, reg.bundleID);
+    XCTAssertEqualObjects(pushed.appURL, reg.appURL);
+    XCTAssertEqualObjects(pushed.updateURL, reg.updateURL);
+    XCTAssertEqualObjects(pushed.fallbackURL, reg.fallbackURL);
+    XCTAssertEqualObjects(pushed.vendorURL, reg.vendorURL);
+}
+
 - (void)testMissingShortVersionFails {
     NSDictionary *info = @{ @"CFBundleIdentifier": @"com.example.noversion" };
     NSURL *appURL = [self makeAppBundleNamed:@"NoVersion" infoPlist:info conductorJSON:ValidConductorJSON()];
