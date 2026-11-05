@@ -1,8 +1,8 @@
 ---
 title: Conductor — Update Retraction Handling
-status: Draft (design, pre-implementation)
+status: Implemented (M2); State A presentation amended by v2 (CND-6)
 created: 2026-07-19
-updated: 2026-07-19
+updated: 2026-11-05
 tags: [conductor, retraction, recall, manifest, spec]
 related: [replace-flow.md, MUW-145]
 ---
@@ -40,6 +40,29 @@ loud failure is impossible.
 	*"<App>: the developer retracted update <vX+1>. You already have the
 	latest build (<vX>)."*
 *	Offer the vendor URL / changelog link so the curious can find out why.
+
+How State A reaches the user (v2):
+
+*	**The loud message fires once.** The decision that detects the
+	retraction clears `last_notified_version`, so no later check
+	announces it again. That is unchanged.
+*	**Where it appears depends on who started the check.** A scheduled
+	check posts a user notification and never raises anything modal. A
+	check the user asked for ("Check now"), or an install whose
+	last-moment re-check found the update withdrawn, shows the amber
+	retraction sheet — but only if the main window is key; otherwise it
+	falls back to the same notification.
+*	**The row keeps an amber notice until it is acknowledged.** The
+	detection is one-time, but the user may not have seen it: the app's
+	row says "<vX+1> was retracted" and its pane shows the banner (with
+	the dates the version was surfaced and pulled) across later checks
+	and relaunches, until the user presses *Got it* / *OK*. This is
+	presentation state, stored beside the other preferences — the
+	policy and its state store are not involved, and it is never a
+	policy input.
+*	The notice is dropped without being acknowledged when it becomes
+	moot: the developer advertises something newer, or the withdrawn
+	build turns out to be installed (State B takes over).
 
 **State B — already installed the retracted build:**
 

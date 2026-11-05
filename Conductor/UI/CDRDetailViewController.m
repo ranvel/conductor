@@ -596,7 +596,10 @@ static NSString *ShortDay(NSDate *date) {
 
     NSString *body = recalled
         ? [NSString stringWithFormat:@"The developer pulled %@ after you installed it. Conductor doesn't downgrade automatically — check the developer's site for guidance.", version]
-        : [NSString stringWithFormat:@"%@ was advertised, then pulled. There's nothing to install.", version];
+        : ((row.retractionAdvertisedDate && row.retractionPulledDate)
+           ? [NSString stringWithFormat:@"%@ was advertised on %@ and pulled on %@. There's nothing to install.",
+              version, ShortDay(row.retractionAdvertisedDate), ShortDay(row.retractionPulledDate)]
+           : [NSString stringWithFormat:@"%@ was advertised, then pulled. There's nothing to install.", version]);
     [self addSection:CDRLabel(body, BodyFont(), CDRPalette.textSecondary, YES) spacingBefore:16];
 
     NSMutableArray<NSView *> *buttons = [NSMutableArray array];

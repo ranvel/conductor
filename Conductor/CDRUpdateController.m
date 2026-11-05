@@ -18,6 +18,7 @@
 #import "CDRAppUpdateState.h"
 #import "CDRErrors.h"
 #import "CDRIgnoreList.h"
+#import "CDRRetractionNotices.h"
 #import "CDRSharedLog.h"
 
 BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
@@ -169,20 +170,28 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 #pragma mark - Checks
 
 - (void)checkAllPassive {
+    [self checkAllUserStarted:NO];
+}
+
+- (void)checkAllUserStarted {
+    [self checkAllUserStarted:YES];
+}
+
+- (void)checkAllUserStarted:(BOOL)userStarted {
     NSSet<NSString *> *ignored = CDRIgnoredBundleIDs(self.defaults);
     for (CDRAppRegistration *reg in self.registrations) {
         if ([ignored containsObject:reg.bundleID]) continue;
-        [self checkRegistration:reg breakThrough:NO];
+        [self checkRegistration:reg breakThrough:NO userStarted:userStarted];
     }
 }
 
 - (void)checkApp:(NSString *)bundleID userInitiated:(BOOL)userInitiated {
     CDRAppRegistration *reg = [self registrationForBundleID:bundleID];
     if (!reg) return;
-    [self checkRegistration:reg breakThrough:userInitiated];
+    [self checkRegistration:reg breakThrough:userInitiated userStarted:userInitiated];
 }
 
-- (void)checkRegistration:(CDRAppRegistration *)reg breakThrough:(BOOL)breakThrough {
+- (void)checkRegistration:(CDRAppRegistration *)reg breakThrough:(BOOL)breakThrough userStarted:(BOOL)userStarted {
     // The installed version is ephemeral: the bundle may have been replaced
     // since the last scan (by Conductor itself or out-of-band), so re-read it
     // from disk before every check — one plist read, no discovery churn.
@@ -218,7 +227,8 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             for (NSString *warning in manifest.parseWarnings) {
                 [CDRSharedLog log:[NSString stringWithFormat:@"%@: manifest — %@", bundleID, warning]];
             }
-            [self evaluateManifest:manifest registration:reg breakThrough:breakThrough notify:YES];
+            [self evaluateManifest:manifest registration:reg breakThrough:breakThrough
+                       userStarted:userStarted notify:YES];
             [self rebuildRowModels];
         });
     }];
@@ -232,6 +242,18 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 - (CDRUpdateDecision *)evaluateManifest:(CDRManifest *)manifest
                            registration:(CDRAppRegistration *)reg
                            breakThrough:(BOOL)breakThrough
+                                 notify:(BOOL)notify {
+    return [self evaluateManifest:manifest registration:reg breakThrough:breakThrough
+                      userStarted:breakThrough notify:notify];
+}
+
+/// `userStarted` says the check behind this manifest was one the user asked
+/// for. Only then may a finding be *presented* (a sheet) rather than
+/// notified — a scheduled check never raises anything modal.
+- (CDRUpdateDecision *)evaluateManifest:(CDRManifest *)manifest
+                           registration:(CDRAppRegistration *)reg
+                           breakThrough:(BOOL)breakThrough
+                            userStarted:(BOOL)userStarted
                                  notify:(BOOL)notify {
     NSString *bundleID = reg.bundleID;
     CDRUpdatePreferences *preferences =
@@ -247,7 +269,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     self.lastDecisions[bundleID] = decision;
     self.lastManifests[bundleID] = manifest;
     [self handleDecision:decision manifest:manifest registration:reg
-           previousState:previousState notify:notify];
+           previousState:previousState userStarted:userStarted notify:notify];
     return decision;
 }
 
@@ -255,9 +277,26 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
               manifest:(CDRManifest *)manifest
           registration:(CDRAppRegistration *)reg
          previousState:(nullable CDRAppUpdateState *)previousState
+           userStarted:(BOOL)userStarted
                 notify:(BOOL)notify {
     NSString *bundleID = reg.bundleID;
     NSString *appName = reg.appURL.lastPathComponent.stringByDeletingPathExtension;
+
+    // A retraction notice is about a version that was pulled with nothing
+    // newer on offer. Once the developer advertises something newer again,
+    // or the recalled build turns out to be installed, it is moot.
+    switch (decision.outcome) {
+        case CDRUpdateOutcomeAvailable:
+        case CDRUpdateOutcomeDeferred:
+        case CDRUpdateOutcomeDeferredOffered:
+        case CDRUpdateOutcomeHeld:
+        case CDRUpdateOutcomeStoppedAtMajor:
+        case CDRUpdateOutcomeRetractedInstalled:
+            CDRSetRetractionNotice(nil, bundleID, self.defaults);
+            break;
+        default:
+            break;
+    }
 
     switch (decision.outcome) {
         case CDRUpdateOutcomeAvailable: {
@@ -335,7 +374,29 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             NSString *message = CDRRetractedPendingCopy(appName, decision.retractedVersion,
                                                         reg.installedShortVersion);
             [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@", bundleID, message]];
-            if (notify) {
+            // The decision is one-time; the notice is what keeps the row's
+            // banner up until the user has read it.
+            CDRSetRetractionNotice([CDRRetractionNotice noticeWithVersion:decision.retractedVersion
+                                                              advertisedAt:previousState.notifiedAt
+                                                                  pulledAt:[NSDate date]],
+                                   bundleID, self.defaults);
+            if (!notify) break;
+            if (userStarted) {
+                // The user asked for this check: the sheet if the window is
+                // key, the notification otherwise (the presenter decides).
+                __weak typeof(self) weakSelf = self;
+                [self.presenter presentRetractionForAppNamed:appName
+                                                    bundleID:bundleID
+                                                      appURL:reg.appURL
+                                            retractedVersion:decision.retractedVersion
+                                            installedVersion:reg.installedShortVersion
+                                                     message:message
+                                                   vendorURL:reg.vendorURL
+                                                  completion:^(BOOL acknowledged) {
+                    if (acknowledged) [weakSelf performRowAction:CDRAppRowActionAcknowledge forBundleID:bundleID];
+                }];
+            } else {
+                // A scheduled check never raises anything modal.
                 [self.presenter notifyRetractedPending:message bundleID:bundleID vendorURL:reg.vendorURL];
             }
             break;
@@ -397,9 +458,37 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 
 - (void)performRowAction:(CDRAppRowActions)action forBundleID:(NSString *)bundleID {
     switch (action) {
-        case CDRAppRowActionInstall:
+        case CDRAppRowActionInstall: {
+            // An update the user holds for manual install is confirmed once
+            // more, with what it contains in front of them. That goes for a
+            // major-version stop that also carries held categories.
+            CDRAppRegistration *reg = [self registrationForBundleID:bundleID];
+            CDRManifest *manifest = self.knownManifests[bundleID];
+            CDRUpdateDecision *decision = self.lastDecisions[bundleID];
+            if (reg && manifest && decision.heldTypes != CDRReleaseNoteTypeSetNone && !self.operations[bundleID]) {
+                CDRUpdatePreferences *preferences =
+                    [CDRPolicyResolver effectivePreferencesForBundleID:bundleID defaults:self.defaults];
+                NSArray<CDRRelease *> *releases = [manifest releasesNewerThanVersion:reg.installedShortVersion];
+                __weak typeof(self) weakSelf = self;
+                [self.presenter presentHeldUpdateForAppNamed:reg.appURL.lastPathComponent.stringByDeletingPathExtension
+                                                    bundleID:bundleID
+                                                      appURL:reg.appURL
+                                                     version:manifest.version
+                                                  heldGroups:CDRNoteGroupsOfTypes(releases, decision.heldTypes)
+                                                   holdTypes:preferences.holdTypes
+                                                  completion:^(BOOL install) {
+                    __strong typeof(weakSelf) self = weakSelf;
+                    if (!self || !install) return;   // Not now: the row stays Held
+                    // The same consent path as any install.
+                    [self.stateStore noteNotifiedVersion:manifest.version build:manifest.build
+                                             forBundleID:bundleID at:[NSDate date]];
+                    [self installApp:bundleID];
+                }];
+                break;
+            }
             [self installApp:bundleID];
             break;
+        }
         case CDRAppRowActionCheckNow:
             [self checkApp:bundleID userInitiated:YES];
             break;
@@ -455,6 +544,8 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             // already cleared the notified memory, so a fresh passive check
             // lands on plain "up to date" and replaces the notice.
             [CDRSharedLog log:[NSString stringWithFormat:@"%@: retraction notice acknowledged.", bundleID]];
+            CDRSetRetractionNotice(nil, bundleID, self.defaults);
+            [self rebuildRowModels];
             [self checkApp:bundleID userInitiated:NO];
             break;
         default:
@@ -594,14 +685,35 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             // retraction between notify and install (retraction.md) — this is
             // State A, not a generic failure. The operation stays state-free;
             // the state reaction lives here.
+            NSString *retractedVersion = self.knownManifests[bundleID].version
+                ?: [self.stateStore stateForBundleID:bundleID].lastNotifiedVersion;
+            NSDate *advertisedAt = [self.stateStore stateForBundleID:bundleID].notifiedAt;
             [self.stateStore clearNotifiedVersionForBundleID:bundleID at:[NSDate date]];
             [self.knownManifests removeObjectForKey:bundleID];
             [self.lastDecisions removeObjectForKey:bundleID];
             [self.lastManifests removeObjectForKey:bundleID];
             [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@", bundleID, error.localizedDescription]];
-            [self.presenter presentRetractionNotice:error.localizedDescription
-                                          vendorURL:(error.userInfo[CDRErrorVendorURLKey]
-                                                     ?: op.registration.vendorURL)];
+            if (retractedVersion) {
+                // Same notice a check would leave, so the row keeps its
+                // banner if the sheet can't be shown or isn't read.
+                CDRSetRetractionNotice([CDRRetractionNotice noticeWithVersion:retractedVersion
+                                                                  advertisedAt:advertisedAt
+                                                                      pulledAt:[NSDate date]],
+                                       bundleID, self.defaults);
+            }
+            // The user pressed Install: a user-started flow.
+            __weak typeof(self) weakSelf = self;
+            [self.presenter presentRetractionForAppNamed:appName
+                                                bundleID:bundleID
+                                                  appURL:op.registration.appURL
+                                        retractedVersion:retractedVersion ?: @"the update"
+                                        installedVersion:op.registration.installedShortVersion
+                                                 message:error.localizedDescription
+                                               vendorURL:(error.userInfo[CDRErrorVendorURLKey]
+                                                          ?: op.registration.vendorURL)
+                                              completion:^(BOOL acknowledged) {
+                if (acknowledged) [weakSelf performRowAction:CDRAppRowActionAcknowledge forBundleID:bundleID];
+            }];
             [self rebuildRowModels];
             return;
         }
@@ -673,6 +785,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
         context.developerName = [self developerNameForRegistration:reg];
         context.preferences = [CDRPolicyResolver effectivePreferencesForBundleID:bundleID defaults:self.defaults];
+        context.pendingRetraction = CDRRetractionNoticeForBundleID(bundleID, self.defaults);
         [rows addObject:[CDRAppRowModel modelForRegistration:reg
                                                 lastDecision:self.lastDecisions[bundleID]
                                              decidedManifest:self.lastManifests[bundleID]

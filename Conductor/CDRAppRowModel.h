@@ -10,6 +10,7 @@
 @class CDRAppRegistration;
 @class CDRUpdateDecision;
 @class CDRUpdatePreferences;
+@class CDRRetractionNotice;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -102,6 +103,9 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 @property (nonatomic, copy, nullable) NSString *developerName;
 /// The app's effective preferences (Settings with its override applied).
 @property (nonatomic, nullable) CDRUpdatePreferences *preferences;
+/// A retraction the user hasn't acknowledged. Keeps the row Retracted after
+/// the one-time decision has passed (later checks, relaunches).
+@property (nonatomic, nullable) CDRRetractionNotice *pendingRetraction;
 @end
 
 @interface CDRAppRowModel : NSObject
@@ -160,6 +164,10 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 @property (nonatomic, readonly, nullable) NSDate *deferredUntil;
 /// The withdrawn version (Retracted) or the recalled one (Recalled).
 @property (nonatomic, readonly, nullable) NSString *retractedVersion;
+/// When the withdrawn version was surfaced to the user, and when Conductor
+/// saw it pulled — for the retraction pane's wording. Nil when unknown.
+@property (nonatomic, readonly, nullable) NSDate *retractionAdvertisedDate;
+@property (nonatomic, readonly, nullable) NSDate *retractionPulledDate;
 /// The note types that put this row in Held, in the fixed order.
 @property (nonatomic, readonly) CDRReleaseNoteTypeSet heldTypes;
 @property (nonatomic, readonly) CDRUpdatePhase operationPhase;

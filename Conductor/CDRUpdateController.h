@@ -60,6 +60,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// The global check (Check All / scheduler): every non-ignored app,
 /// breakThrough:NO — a passive sweep never breaks a deferral.
 - (void)checkAllPassive;
+/// The same check of every non-ignored app, but one the user asked for
+/// ("Check now"). It does not break through deferrals — only a per-app
+/// check does — but what it finds may be presented, not just notified.
+- (void)checkAllUserStarted;
 
 /// Per-app check. userInitiated:YES is the deliberate act that breaks through
 /// a deferral (deferral.md) and overrides ignore.

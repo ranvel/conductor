@@ -7,6 +7,7 @@
 #import "CDRAppListViewController.h"
 #import "CDRDetailViewController.h"
 #import "CDRDevModeSession.h"
+#import "CDRInterruptSheetController.h"
 #import "CDROverridePopoverController.h"
 #import "CDRPalette.h"
 #import "CDRViews.h"
@@ -39,6 +40,8 @@ static NSToolbarItemIdentifier const kSettingsItem = @"CDRToolbarSettings";
 @property (nonatomic) CDRButton *checkButton;
 @property (nonatomic) NSTimer *clockTimer;
 @property (nonatomic, nullable) NSPopover *overridePopover;
+/// Held while its sheet is up.
+@property (nonatomic, nullable) CDRInterruptSheetController *interruptSheet;
 @end
 
 @implementation CDRMainWindowController
@@ -294,6 +297,28 @@ static NSToolbarItemIdentifier const kSettingsItem = @"CDRToolbarSettings";
     self.checkedLabel.stringValue = CDRCheckedAgoString(self.lastCheckDate, [NSDate date]);
     self.checkButton.enabled = (self.rowModels.count > 0);
     self.window.title = summary.length > 0 ? [NSString stringWithFormat:@"Conductor — %@", summary] : @"Conductor";
+}
+
+#pragma mark - Interrupt sheets
+
+- (BOOL)canPresentInterruptSheet {
+    return self.window.isVisible && self.window.attachedSheet == nil && self.interruptSheet == nil;
+}
+
+- (void)presentInterruptSheet:(CDRInterruptSheetModel *)model
+                   completion:(void (^)(NSInteger, BOOL))completion {
+    if (!self.canPresentInterruptSheet) {
+        completion(CDRInterruptSheetActionDismiss, NO);
+        return;
+    }
+    [self.overridePopover close];
+    CDRInterruptSheetController *sheet = [[CDRInterruptSheetController alloc] initWithModel:model];
+    self.interruptSheet = sheet;
+    __weak typeof(self) weakSelf = self;
+    [sheet beginSheetOnWindow:self.window completion:^(CDRInterruptSheetResponse response) {
+        weakSelf.interruptSheet = nil;
+        completion([model actionForResponse:response], response == CDRInterruptSheetResponseLink);
+    }];
 }
 
 #pragma mark - Per-app overrides

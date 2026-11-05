@@ -8,6 +8,7 @@
 #import "CDRAppRegistration.h"
 #import "CDRUpdatePolicy.h"
 #import "CDRUpdatePreferences.h"
+#import "CDRRetractionNotices.h"
 #import "CDRManifest.h"
 #import "CDRVersion.h"
 #import "CDRErrors.h"
@@ -149,6 +150,21 @@ static NSString *MediumDate(NSDate *date) {
         return model;
     }
 
+    // An unacknowledged retraction outlives the decision that found it: with
+    // no decision yet this launch, or one that says "up to date", the row
+    // still carries the notice until the user says "Got it".
+    CDRRetractionNotice *notice = context.pendingRetraction;
+    BOOL quietOutcome = !decision
+        || decision.outcome == CDRUpdateOutcomeUpToDate
+        || decision.outcome == CDRUpdateOutcomeDroppedSilently;
+    if (notice && quietOutcome) {
+        [model becomeRetractedVersion:notice.version registration:registration
+                          changelogURL:manifest.changelogURL ignoreToggle:ignoreToggle];
+        model.retractionAdvertisedDate = notice.advertisedAt;
+        model.retractionPulledDate = notice.pulledAt;
+        return model;
+    }
+
     if (!decision) {
         model.state = CDRAppRowStateUnknown;
         model.stateLine = @"not yet checked";
@@ -216,15 +232,12 @@ static NSString *MediumDate(NSDate *date) {
 
         case CDRUpdateOutcomeRetractedPending: {
             // State A: nothing is installable. The row asks only to be read.
-            model.state = CDRAppRowStateRetracted;
-            model.retractedVersion = decision.retractedVersion;
-            model.noteTypes = CDRReleaseNoteTypeSetRetracted;
-            model.changelogURL = manifest.changelogURL;
-            model.stateLine = [NSString stringWithFormat:@"update %@ retracted — you have the latest version",
-                               decision.retractedVersion];
-            model.actions = CDRAppRowActionCheckNow | CDRAppRowActionAcknowledge | ignoreToggle
-                | (registration.vendorURL ? CDRAppRowActionVendorSite : 0);
-            model.contributesToBadge = YES;
+            [model becomeRetractedVersion:decision.retractedVersion registration:registration
+                              changelogURL:manifest.changelogURL ignoreToggle:ignoreToggle];
+            if (notice && [notice.version isEqualToString:decision.retractedVersion]) {
+                model.retractionAdvertisedDate = notice.advertisedAt;
+                model.retractionPulledDate = notice.pulledAt;
+            }
             break;
         }
 
@@ -248,6 +261,20 @@ static NSString *MediumDate(NSDate *date) {
         }
     }
     return model;
+}
+
+- (void)becomeRetractedVersion:(NSString *)version
+                  registration:(CDRAppRegistration *)registration
+                  changelogURL:(nullable NSURL *)changelogURL
+                  ignoreToggle:(CDRAppRowActions)ignoreToggle {
+    self.state = CDRAppRowStateRetracted;
+    self.retractedVersion = version;
+    self.noteTypes = CDRReleaseNoteTypeSetRetracted;
+    self.changelogURL = changelogURL;
+    self.stateLine = [NSString stringWithFormat:@"update %@ retracted — you have the latest version", version];
+    self.actions = CDRAppRowActionCheckNow | CDRAppRowActionAcknowledge | ignoreToggle
+        | (registration.vendorURL ? CDRAppRowActionVendorSite : 0);
+    self.contributesToBadge = YES;
 }
 
 /// Fills everything the window shows about a pending update — the version

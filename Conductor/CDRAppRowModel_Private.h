@@ -32,6 +32,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readwrite) CDRUrgency urgency;
 @property (nonatomic, readwrite, nullable) NSDate *deferredUntil;
 @property (nonatomic, readwrite, nullable) NSString *retractedVersion;
+@property (nonatomic, readwrite, nullable) NSDate *retractionAdvertisedDate;
+@property (nonatomic, readwrite, nullable) NSDate *retractionPulledDate;
 @property (nonatomic, readwrite) CDRReleaseNoteTypeSet heldTypes;
 @property (nonatomic, readwrite) CDRUpdatePhase operationPhase;
 @property (nonatomic, readwrite, nullable) NSString *errorDescription;

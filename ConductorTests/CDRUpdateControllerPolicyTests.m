@@ -30,6 +30,11 @@ static NSString * const kAppBundleID = @"com.example.policy-app";
                            registration:(CDRAppRegistration *)reg
                            breakThrough:(BOOL)breakThrough
                                  notify:(BOOL)notify;
+- (CDRUpdateDecision *)evaluateManifest:(CDRManifest *)manifest
+                           registration:(CDRAppRegistration *)reg
+                           breakThrough:(BOOL)breakThrough
+                            userStarted:(BOOL)userStarted
+                                 notify:(BOOL)notify;
 @end
 
 /// A scanner that "finds" the fixture bundles instead of /Applications.
@@ -41,9 +46,26 @@ static NSString * const kAppBundleID = @"com.example.policy-app";
 - (NSArray<CDRAppRegistration *> *)scanApplicationsDirectory { return self.fixtures ?: @[]; }
 @end
 
+/// A fetcher that "serves" one canned manifest (or error) with no network.
+@interface CDRFixtureFetcher : CDRManifestFetcher
+@property (nonatomic, nullable) CDRManifest *manifest;
+@property (nonatomic) NSUInteger fetchCount;
+@end
+
+@implementation CDRFixtureFetcher
+- (void)fetchManifestForRegistration:(CDRAppRegistration *)registration
+                          completion:(void (^)(CDRManifest *, NSError *))completion {
+    self.fetchCount++;
+    completion(self.manifest, self.manifest ? nil : [NSError errorWithDomain:NSURLErrorDomain code:-1009 userInfo:nil]);
+}
+@end
+
 /// Records what the controller asks to be shown; presents nothing.
 @interface CDRRecordingPresenter : NSObject <CDRUpdatePresenting>
 @property (nonatomic) NSMutableArray<NSString *> *events;
+/// What the stand-in "user" answers on the held sheet / retraction sheet.
+@property (nonatomic) BOOL confirmsHeldInstall;
+@property (nonatomic) BOOL acknowledgesRetraction;
 @end
 
 @implementation CDRRecordingPresenter
@@ -61,8 +83,32 @@ static NSString * const kAppBundleID = @"com.example.policy-app";
     [self.events addObject:@"presentDeferredOffer"];
     completion(NO);
 }
-- (void)presentRetractionNotice:(NSString *)message vendorURL:(NSURL *)vendorURL {
-    [self.events addObject:@"presentRetractionNotice"];
+- (void)presentRetractionForAppNamed:(NSString *)appName bundleID:(NSString *)bundleID appURL:(NSURL *)appURL
+                    retractedVersion:(NSString *)retractedVersion installedVersion:(NSString *)installedVersion
+                             message:(NSString *)message vendorURL:(NSURL *)vendorURL
+                          completion:(void (^)(BOOL))completion {
+    [self.events addObject:[NSString stringWithFormat:@"presentRetraction %@ (installed %@)",
+                            retractedVersion, installedVersion]];
+    completion(self.acknowledgesRetraction);
+}
+- (void)presentHeldUpdateForAppNamed:(NSString *)appName bundleID:(NSString *)bundleID appURL:(NSURL *)appURL
+                             version:(NSString *)version heldGroups:(NSArray<CDRReleaseNoteGroup *> *)heldGroups
+                           holdTypes:(CDRReleaseNoteTypeSet)holdTypes completion:(void (^)(BOOL))completion {
+    NSMutableArray<NSString *> *texts = [NSMutableArray array];
+    for (CDRReleaseNoteGroup *group in heldGroups) {
+        for (CDRReleaseNote *note in group.notes) [texts addObject:note.text];
+    }
+    [self.events addObject:[NSString stringWithFormat:@"presentHeld %@ [%@] holds %@", version,
+                            [texts componentsJoinedByString:@" | "], CDRReleaseNoteTypeSetDisplayList(holdTypes)]];
+    completion(self.confirmsHeldInstall);
+}
+- (void)presentNetworkApprovalForAppNamed:(NSString *)appName bundleID:(NSString *)bundleID appURL:(NSURL *)appURL
+                              fromVersion:(NSString *)fromVersion toVersion:(NSString *)toVersion
+                                diffLines:(NSArray<CDRInterruptSheetDiffLine *> *)diffLines
+                               policyRows:(NSArray<CDRInterruptSheetPolicyRow *> *)policyRows
+                               completion:(void (^)(CDRInterruptSheetAction))completion {
+    [self.events addObject:@"presentNetworkApproval"];
+    completion(CDRInterruptSheetActionDismiss);
 }
 - (void)presentRelaunchOfferForAppNamed:(NSString *)appName appURL:(NSURL *)appURL {
     [self.events addObject:@"presentRelaunchOffer"];
@@ -98,6 +144,7 @@ static NSString * const kAppBundleID = @"com.example.policy-app";
 @property (nonatomic) CDRRecordingPresenter *presenter;
 @property (nonatomic) CDRUpdateController *controller;
 @property (nonatomic) CDRAppRegistration *registration;
+@property (nonatomic) CDRFixtureFetcher *fetcher;
 @end
 
 @implementation CDRUpdateControllerPolicyTests
@@ -135,9 +182,10 @@ static NSString * const kAppBundleID = @"com.example.policy-app";
     CDRDevModeSession *session = [CDRDevModeSession sessionFromArguments:@[@"conductor"] error:NULL];
     CDRFixtureScanner *scanner = [[CDRFixtureScanner alloc] init];
     scanner.fixtures = @[self.registration];
+    self.fetcher = [[CDRFixtureFetcher alloc] initWithSession:session];
     self.controller = [[CDRUpdateController alloc] initWithSession:session
                                                            scanner:scanner
-                                                           fetcher:[[CDRManifestFetcher alloc] initWithSession:session]
+                                                           fetcher:self.fetcher
                                                         stateStore:self.store
                                                           defaults:self.defaults];
     self.controller.presenter = self.presenter;
@@ -322,6 +370,159 @@ static NSString * const kAppBundleID = @"com.example.policy-app";
     [self writeGlobal:^(CDRMutableUpdatePreferences *prefs) { prefs.stopAtMajorVersions = YES; }];
     [self.controller preferencesDidChange];
     XCTAssertEqual([self row].state, CDRAppRowStateRetracted, @"the notice stays until it is acknowledged");
+}
+
+#pragma mark - Interrupt sheets (CND-6)
+
+/// Runs a real check through the fixture fetcher and waits for the decision.
+- (void)check:(CDRManifest *)manifest userStarted:(BOOL)userStarted {
+    self.fetcher.manifest = manifest;
+    NSUInteger before = self.fetcher.fetchCount;
+    if (userStarted) [self.controller checkAllUserStarted];
+    else [self.controller checkAllPassive];
+    XCTAssertEqual(self.fetcher.fetchCount, before + 1);
+    [self spinMainQueue];
+}
+
+/// Lets blocks already queued on the main queue run (the controller hops
+/// there to decide).
+- (void)spinMainQueue {
+    XCTestExpectation *drained = [self expectationWithDescription:@"main queue drained"];
+    dispatch_async(dispatch_get_main_queue(), ^{ [drained fulfill]; });
+    [self waitForExpectations:@[drained] timeout:5];
+}
+
+- (void)testInstallOnAHeldRowOpensTheHeldSheetInsteadOfInstalling {
+    [self startWithInstalledVersion:@"1.3"];
+    [self check:[self manifest:@"1.4" notes:@[@"fixed", @"removed"]] userStarted:NO];
+    XCTAssertEqual([self row].state, CDRAppRowStateHeld);
+    [self.presenter.events removeAllObjects];
+
+    // "Not now" on the sheet.
+    self.presenter.confirmsHeldInstall = NO;
+    [self.controller performRowAction:CDRAppRowActionInstall forBundleID:kAppBundleID];
+    [self spinMainQueue];
+    // The sheet was asked for, with only the offending note and the user's
+    // hold categories…
+    XCTAssertEqualObjects(self.presenter.events,
+                          (@[@"presentHeld 1.4 [removed note] holds Notice, Removed, Retracted"]));
+    // …and nothing was installed: the row is still Held.
+    XCTAssertEqual([self row].state, CDRAppRowStateHeld);
+    XCTAssertFalse(self.controller.hasOperationsInCriticalPhase);
+}
+
+- (void)testInstallFromTheHeldSheetProceedsThroughTheNormalInstallPath {
+    [self startWithInstalledVersion:@"1.3"];
+    [self check:[self manifest:@"1.4" notes:@[@"removed"]] userStarted:NO];
+    [self.presenter.events removeAllObjects];
+
+    self.presenter.confirmsHeldInstall = YES;
+    [self.controller performRowAction:CDRAppRowActionInstall forBundleID:kAppBundleID];
+
+    // The ordinary pipeline runs — and, as for any install, refuses the
+    // unsigned fixture app at its very first step, before any network.
+    XCTestExpectation *finished = [self expectationWithDescription:@"operation finished"];
+    __block BOOL fulfilled = NO;
+    self.controller.onRowModelsChanged = ^{
+        if (!fulfilled && [self.presenter.events containsObject:@"installFailed"]) {
+            fulfilled = YES;
+            [finished fulfill];
+        }
+    };
+    [self waitForExpectations:@[finished] timeout:15];
+    XCTAssertEqualObjects(self.presenter.events.firstObject, @"presentHeld 1.4 [removed note] holds Notice, Removed, Retracted");
+    XCTAssertEqualObjects([self.store stateForBundleID:kAppBundleID].lastNotifiedVersion, @"1.4");
+}
+
+- (void)testAStoppedUpdateThatIsAlsoHeldGoesThroughTheHeldSheetToo {
+    [self writeGlobal:^(CDRMutableUpdatePreferences *prefs) { prefs.stopAtMajorVersions = YES; }];
+    [self startWithInstalledVersion:@"0.9"];
+    [self check:[self manifest:@"1.0" notes:@[@"notice"]] userStarted:NO];
+    XCTAssertEqual([self row].state, CDRAppRowStateStoppedAtMajor);
+    [self.presenter.events removeAllObjects];
+
+    [self.controller performRowAction:CDRAppRowActionInstall forBundleID:kAppBundleID];
+    XCTAssertEqualObjects(self.presenter.events,
+                          (@[@"presentHeld 1.0 [notice note] holds Notice, Removed, Retracted"]));
+    XCTAssertEqual([self row].state, CDRAppRowStateStoppedAtMajor);
+}
+
+- (void)testAnOrdinaryUpdateNeverShowsTheHeldSheet {
+    [self startWithInstalledVersion:@"1.3"];
+    [self check:[self manifest:@"1.4" notes:@[@"fixed"]] userStarted:NO];
+    XCTAssertEqual([self row].state, CDRAppRowStateAvailable);
+    XCTAssertEqualObjects(self.presenter.events, (@[@"available 1.4"]));
+}
+
+- (void)testARetractionFoundByAScheduledCheckIsNotifiedAndItsBannerPersists {
+    [self startWithInstalledVersion:@"1.1"];
+    [self check:[self manifest:@"1.2" notes:@[@"fixed"]] userStarted:NO];
+    XCTAssertEqualObjects(self.presenter.events, (@[@"available 1.2"]));
+
+    // The developer pulls 1.2. A scheduled check finds out: passive only.
+    [self check:[self manifest:@"1.1" notes:@[]] userStarted:NO];
+    XCTAssertEqualObjects(self.presenter.events, (@[@"available 1.2", @"retractedPending"]));
+    XCTAssertEqual([self row].state, CDRAppRowStateRetracted);
+    XCTAssertEqualObjects([self row].retractedVersion, @"1.2");
+    XCTAssertNotNil([self row].retractionAdvertisedDate);
+    XCTAssertNotNil([self row].retractionPulledDate);
+
+    // Later checks decide "up to date" — the policy's memory was one-time —
+    // but the unread notice keeps the row's banner, and nothing is re-announced.
+    [self check:[self manifest:@"1.1" notes:@[]] userStarted:NO];
+    [self check:[self manifest:@"1.1" notes:@[]] userStarted:YES];
+    XCTAssertEqual(self.presenter.events.count, 2u);
+    XCTAssertEqual([self row].state, CDRAppRowStateRetracted);
+    XCTAssertEqual([self row].section, CDRAppRowSectionNeedsYou);
+
+    // It survives a relaunch: a new controller over the same defaults.
+    CDRUpdateController *relaunched = [[CDRUpdateController alloc]
+        initWithSession:[CDRDevModeSession sessionFromArguments:@[@"conductor"] error:NULL]
+                scanner:({ CDRFixtureScanner *scanner = [[CDRFixtureScanner alloc] init];
+                           scanner.fixtures = @[self.registration]; scanner; })
+                fetcher:self.fetcher stateStore:self.store defaults:self.defaults];
+    [relaunched rescan];
+    XCTAssertEqual(relaunched.rowModels.firstObject.state, CDRAppRowStateRetracted);
+
+    // "Got it" clears it; the row is plainly up to date.
+    [self.controller performRowAction:CDRAppRowActionAcknowledge forBundleID:kAppBundleID];
+    [self spinMainQueue];
+    XCTAssertEqual([self row].state, CDRAppRowStateUpToDate);
+    XCTAssertNil([self.defaults objectForKey:@"CDRRetractionNotices"]);
+}
+
+- (void)testARetractionFoundByACheckTheUserStartedIsPresented {
+    [self startWithInstalledVersion:@"1.1"];
+    [self check:[self manifest:@"1.2" notes:@[@"fixed"]] userStarted:NO];
+    [self.presenter.events removeAllObjects];
+
+    // The user presses Check now; the presenter decides sheet vs notice.
+    self.presenter.acknowledgesRetraction = YES;   // they read the sheet and pressed OK
+    [self check:[self manifest:@"1.1" notes:@[]] userStarted:YES];
+    [self spinMainQueue];
+    XCTAssertEqualObjects(self.presenter.events.firstObject, @"presentRetraction 1.2 (installed 1.1)");
+    XCTAssertFalse([self.presenter.events containsObject:@"retractedPending"]);
+    // Acknowledged on the sheet: no banner left behind.
+    XCTAssertEqual([self row].state, CDRAppRowStateUpToDate);
+}
+
+- (void)testAnUnacknowledgedSheetLeavesTheBanner {
+    [self startWithInstalledVersion:@"1.1"];
+    [self check:[self manifest:@"1.2" notes:@[@"fixed"]] userStarted:NO];
+    self.presenter.acknowledgesRetraction = NO;    // window wasn't key: it fell back to the notice
+    [self check:[self manifest:@"1.1" notes:@[]] userStarted:YES];
+    XCTAssertEqual([self row].state, CDRAppRowStateRetracted);
+}
+
+- (void)testANewerVersionMakesAnOldRetractionNoticeMoot {
+    [self startWithInstalledVersion:@"1.1"];
+    [self check:[self manifest:@"1.2" notes:@[@"fixed"]] userStarted:NO];
+    [self check:[self manifest:@"1.1" notes:@[]] userStarted:NO];
+    XCTAssertEqual([self row].state, CDRAppRowStateRetracted);
+
+    [self check:[self manifest:@"1.3" notes:@[@"fixed"]] userStarted:NO];
+    XCTAssertEqual([self row].state, CDRAppRowStateAvailable);
+    XCTAssertNil([self.defaults objectForKey:@"CDRRetractionNotices"]);
 }
 
 @end

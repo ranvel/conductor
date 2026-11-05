@@ -14,6 +14,7 @@
 #import "CDRAppRowModel_Private.h"
 #import "CDRDetailViewController.h"
 #import "CDRDevModeSession.h"
+#import "CDRInterruptSheetModel.h"
 #import "CDRMainWindowController.h"
 #import "CDRPalette.h"
 #import "CDRRowFixtures.h"
@@ -440,6 +441,40 @@
     }
     XCTAssertNotNil(override);
     XCTAssertFalse(override.isEnabled);
+}
+
+#pragma mark - Interrupt sheets
+
+- (void)testASheetIsNotDroppedFromAWindowThatIsNotOnScreen {
+    // Sheets are for a user who is looking at the window. Off screen, the
+    // caller is told "dismiss" at once and nothing is attached.
+    CDRMainWindowController *controller = [self windowWithRows:[CDRRowFixtures designRows]];
+    XCTAssertFalse(controller.window.isVisible);
+    XCTAssertFalse(controller.canPresentInterruptSheet);
+
+    CDRInterruptSheetModel *model = [CDRInterruptSheetModel retractionModelForAppNamed:@"Fastmail SSB" appURL:nil
+                                                                      retractedVersion:@"1.2" installedVersion:@"1.1"];
+    __block NSInteger reported = -1;
+    [controller presentInterruptSheet:model completion:^(NSInteger action, BOOL usedLink) {
+        reported = action;
+        XCTAssertFalse(usedLink);
+    }];
+    XCTAssertEqual(reported, CDRInterruptSheetActionDismiss);
+    XCTAssertNil(controller.window.attachedSheet);
+}
+
+- (void)testTheRetractionPaneGivesTheDatesWhenTheyAreKnown {
+    CDRAppRowModel *fastmail = [CDRRowFixtures designRowNamed:@"Fastmail SSB"];
+    NSCalendar *calendar = [NSCalendar currentCalendar];
+    NSDateComponents *c = [[NSDateComponents alloc] init];
+    c.year = 2026; c.month = 11; c.day = 1; c.hour = 12;
+    fastmail.retractionAdvertisedDate = [calendar dateFromComponents:c];
+    c.day = 2;
+    fastmail.retractionPulledDate = [calendar dateFromComponents:c];
+    CDRMainWindowController *controller = [self windowWithRows:@[fastmail]];
+    controller.selectedBundleID = fastmail.bundleID;
+    XCTAssertTrue([self view:controller.detailViewController.view
+                containsText:@"1.2 was advertised on Nov 1 and pulled on Nov 2. There's nothing to install."]);
 }
 
 #pragma mark - View helpers

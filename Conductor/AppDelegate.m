@@ -74,8 +74,10 @@
     void (^onRowAction)(NSString *, CDRAppRowActions) = ^(NSString *bundleID, CDRAppRowActions action) {
         [weakSelf.updateController performRowAction:action forBundleID:bundleID];
     };
+    // "Check now" in the window or the menu bar: the same check the
+    // scheduler runs, but one the user asked for.
     void (^onCheckAll)(void) = ^{
-        [weakSelf.updateController checkAllPassive];
+        [weakSelf.updateController checkAllUserStarted];
     };
     self.updateController.onRowModelsChanged = ^{
         [weakSelf rowModelsChanged];
@@ -87,7 +89,7 @@
     self.mainWindowController.onCheckAll = onCheckAll;
     self.mainWindowController.onScanAgain = ^{
         [weakSelf.updateController rescan];
-        [weakSelf.updateController checkAllPassive];
+        [weakSelf.updateController checkAllUserStarted];
     };
     self.mainWindowController.onOpenSettings = ^{
         [weakSelf showSettingsWindow];
@@ -316,15 +318,77 @@
     completion([alert runModal] == NSAlertFirstButtonReturn);
 }
 
-- (void)presentRetractionNotice:(NSString *)message vendorURL:(NSURL *)vendorURL {
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Update retracted";
-    alert.informativeText = message;
-    [alert addButtonWithTitle:@"OK"];
-    if (vendorURL) [alert addButtonWithTitle:@"Developer's Site"];
-    if ([alert runModal] == NSAlertSecondButtonReturn && vendorURL) {
-        [[NSWorkspace sharedWorkspace] openURL:vendorURL];
+- (void)presentRetractionForAppNamed:(NSString *)appName
+                            bundleID:(NSString *)bundleID
+                              appURL:(NSURL *)appURL
+                    retractedVersion:(NSString *)retractedVersion
+                    installedVersion:(NSString *)installedVersion
+                             message:(NSString *)message
+                           vendorURL:(NSURL *)vendorURL
+                          completion:(void (^)(BOOL acknowledged))completion {
+    // The sheet only where the user is already looking. Otherwise the same
+    // passive notice a background check posts; the row keeps its banner.
+    if (!self.mainWindowController.window.isKeyWindow || !self.mainWindowController.canPresentInterruptSheet) {
+        [self notifyRetractedPending:message bundleID:bundleID vendorURL:vendorURL];
+        completion(NO);
+        return;
     }
+    self.mainWindowController.selectedBundleID = bundleID;
+    CDRInterruptSheetModel *model = [CDRInterruptSheetModel retractionModelForAppNamed:appName
+                                                                                appURL:appURL
+                                                                      retractedVersion:retractedVersion
+                                                                      installedVersion:installedVersion];
+    [self.mainWindowController presentInterruptSheet:model completion:^(NSInteger action, BOOL usedLink) {
+        completion(YES);
+    }];
+}
+
+- (void)presentHeldUpdateForAppNamed:(NSString *)appName
+                            bundleID:(NSString *)bundleID
+                              appURL:(NSURL *)appURL
+                             version:(NSString *)version
+                          heldGroups:(NSArray<CDRReleaseNoteGroup *> *)heldGroups
+                           holdTypes:(CDRReleaseNoteTypeSet)holdTypes
+                          completion:(void (^)(BOOL install))completion {
+    // The user pressed Install — from the window or the menu bar. Either
+    // way the confirmation drops from the window, on that app.
+    [self showMainWindow];
+    self.mainWindowController.selectedBundleID = bundleID;
+    CDRInterruptSheetModel *model = [CDRInterruptSheetModel heldModelForAppNamed:appName
+                                                                          appURL:appURL
+                                                                         version:version
+                                                                      heldGroups:heldGroups
+                                                                       holdTypes:holdTypes];
+    __weak typeof(self) weakSelf = self;
+    [self.mainWindowController presentInterruptSheet:model completion:^(NSInteger action, BOOL usedLink) {
+        completion(action == CDRInterruptSheetActionInstall);
+        if (usedLink) {
+            // "Change in Settings": the hold categories.
+            [weakSelf showSettingsWindow];
+            [weakSelf.settingsWindowController showSection:CDRSettingsSectionInstallManually];
+        }
+    }];
+}
+
+- (void)presentNetworkApprovalForAppNamed:(NSString *)appName
+                                 bundleID:(NSString *)bundleID
+                                   appURL:(NSURL *)appURL
+                              fromVersion:(NSString *)fromVersion
+                                toVersion:(NSString *)toVersion
+                                diffLines:(NSArray<CDRInterruptSheetDiffLine *> *)diffLines
+                               policyRows:(NSArray<CDRInterruptSheetPolicyRow *> *)policyRows
+                               completion:(void (^)(CDRInterruptSheetAction action))completion {
+    [self showMainWindow];
+    self.mainWindowController.selectedBundleID = bundleID;
+    CDRInterruptSheetModel *model = [CDRInterruptSheetModel networkModelForAppNamed:appName
+                                                                             appURL:appURL
+                                                                        fromVersion:fromVersion
+                                                                          toVersion:toVersion
+                                                                          diffLines:diffLines
+                                                                         policyRows:policyRows];
+    [self.mainWindowController presentInterruptSheet:model completion:^(NSInteger action, BOOL usedLink) {
+        completion((CDRInterruptSheetAction)action);
+    }];
 }
 
 - (void)presentRelaunchOfferForAppNamed:(NSString *)appName appURL:(NSURL *)appURL {

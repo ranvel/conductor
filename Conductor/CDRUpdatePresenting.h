@@ -7,6 +7,8 @@
 #import "CDRManifest.h"
 #import "CDRUpdateOperation.h"
 
+#import "CDRInterruptSheetModel.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// The presentation seam between CDRUpdateController and the UI. Two groups:
@@ -30,9 +32,45 @@ NS_ASSUME_NONNULL_BEGIN
                           deferredUntil:(NSDate *)deferredUntil
                              completion:(void (^)(BOOL installAnyway))completion;
 
-/// The last-moment re-check refused a retracted update the user tried to
-/// install (retraction State A at install time).
-- (void)presentRetractionNotice:(NSString *)message vendorURL:(nullable NSURL *)vendorURL;
+/// Retraction State A reaching the user inside a flow they started: an
+/// install whose last-moment re-check found the update withdrawn, or a
+/// check they asked for. The amber sheet when the main window is key;
+/// otherwise the same passive notification a background check posts.
+/// `acknowledged` is YES only when the user dismissed the sheet.
+- (void)presentRetractionForAppNamed:(NSString *)appName
+                            bundleID:(NSString *)bundleID
+                              appURL:(nullable NSURL *)appURL
+                    retractedVersion:(NSString *)retractedVersion
+                    installedVersion:(NSString *)installedVersion
+                             message:(NSString *)message
+                           vendorURL:(nullable NSURL *)vendorURL
+                          completion:(void (^)(BOOL acknowledged))completion;
+
+/// The user chose to install an update they hold for manual install: show
+/// what it contains and ask once more. `heldGroups` are the offending notes,
+/// `holdTypes` the user's hold categories. `install` is YES only for the
+/// sheet's Install button.
+- (void)presentHeldUpdateForAppNamed:(NSString *)appName
+                            bundleID:(NSString *)bundleID
+                              appURL:(nullable NSURL *)appURL
+                             version:(NSString *)version
+                          heldGroups:(NSArray<CDRReleaseNoteGroup *> *)heldGroups
+                           holdTypes:(CDRReleaseNoteTypeSet)holdTypes
+                          completion:(void (^)(BOOL install))completion;
+
+/// A verified new build gains internet access and the user approves that
+/// first (CND-7 supplies the data). With `policyRows` the developer's
+/// Internet Access Policy is shown and Approve is the default; without,
+/// Skip is. `action` is what the user chose: install, skip this version, or
+/// dismiss.
+- (void)presentNetworkApprovalForAppNamed:(NSString *)appName
+                                 bundleID:(NSString *)bundleID
+                                   appURL:(nullable NSURL *)appURL
+                              fromVersion:(NSString *)fromVersion
+                                toVersion:(NSString *)toVersion
+                                diffLines:(NSArray<CDRInterruptSheetDiffLine *> *)diffLines
+                               policyRows:(nullable NSArray<CDRInterruptSheetPolicyRow *> *)policyRows
+                               completion:(void (^)(CDRInterruptSheetAction action))completion;
 
 - (void)presentRelaunchOfferForAppNamed:(NSString *)appName appURL:(NSURL *)appURL;
 

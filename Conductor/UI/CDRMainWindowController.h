@@ -8,6 +8,7 @@
 
 @class CDRDevModeSession;
 @class CDRDetailViewController;
+@class CDRInterruptSheetModel;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -42,6 +43,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, nullable) NSUserDefaults *defaults;
 /// A per-app override changed in the popover.
 @property (nonatomic, copy, nullable) void (^onPreferencesChanged)(void);
+
+/// Whether an interrupt sheet can drop right now: the window is on screen
+/// and no other sheet is attached.
+@property (nonatomic, readonly) BOOL canPresentInterruptSheet;
+
+/// Drops an interrupt sheet from the window. `completion` receives the
+/// model's action for whatever the user chose, and whether they used the
+/// sheet's inline link. If a sheet can't be shown, it is called at once with
+/// "dismiss".
+- (void)presentInterruptSheet:(CDRInterruptSheetModel *)model
+                   completion:(void (^)(NSInteger action, BOOL usedLink))completion;
 
 /// The right pane, for wiring the inputs later tickets add (shown
 /// categories, the per-app override popover).

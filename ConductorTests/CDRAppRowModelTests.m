@@ -15,6 +15,7 @@
 #import "CDRManifest.h"
 #import "CDRUpdatePolicy.h"
 #import "CDRUpdatePreferences.h"
+#import "CDRRetractionNotices.h"
 #import "CDRErrors.h"
 
 static NSString * const kBundleID = @"com.example.app";
@@ -532,6 +533,78 @@ static CDRManifest *ManifestWithNotes(NSString *version, NSArray<NSArray<NSStrin
     XCTAssertFalse(row.actions & CDRAppRowActionInstall, @"a deferred update is never one plain click from installing");
     XCTAssertEqualObjects(row.deferralDurationName, @"3 days");
     XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Deferred · 3 days left");
+}
+
+#pragma mark - Unacknowledged retraction notices (CND-6)
+
+- (void)testAPendingRetractionNoticeKeepsTheRowRetractedAfterTheDecisionHasPassed {
+    NSDate *advertised = [self.now dateByAddingTimeInterval:-2 * 86400];
+    NSDate *pulled = [self.now dateByAddingTimeInterval:-86400];
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+    context.pendingRetraction = [CDRRetractionNotice noticeWithVersion:@"1.2" advertisedAt:advertised pulledAt:pulled];
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:@"1.1"];
+
+    // A later check that says "up to date"…
+    CDRManifest *m = ManifestWithVersion(@"1.1", nil);
+    CDRUpdateDecision *upToDate = [CDRUpdatePolicy decisionForRegistration:reg manifest:m state:nil
+                                                               preferences:PrefsWithSoak(CDRSoakDurationOff)
+                                                              breakThrough:NO now:self.now];
+    XCTAssertEqual(upToDate.outcome, CDRUpdateOutcomeUpToDate);
+    // …and no decision at all (just relaunched): both still show the notice.
+    for (CDRUpdateDecision *decision in @[upToDate, [NSNull null]]) {
+        CDRUpdateDecision *d = [decision isKindOfClass:[NSNull class]] ? nil : decision;
+        CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:reg lastDecision:d decidedManifest:d ? m : nil
+                                                         lastError:nil ignored:NO
+                                                    operationPhase:CDRUpdatePhaseIdle parked:NO context:context];
+        XCTAssertEqual(row.state, CDRAppRowStateRetracted);
+        XCTAssertEqualObjects(row.retractedVersion, @"1.2");
+        XCTAssertEqualObjects(row.retractionAdvertisedDate, advertised);
+        XCTAssertEqualObjects(row.retractionPulledDate, pulled);
+        XCTAssertTrue(row.actions & CDRAppRowActionAcknowledge);
+        XCTAssertEqual(row.noteTypes, CDRReleaseNoteTypeSetRetracted);
+    }
+
+    // Without a notice the same decision is plainly up to date.
+    CDRAppRowModel *plain = [CDRAppRowModel modelForRegistration:reg lastDecision:upToDate decidedManifest:m
+                                                       lastError:nil ignored:NO
+                                                  operationPhase:CDRUpdatePhaseIdle parked:NO];
+    XCTAssertEqual(plain.state, CDRAppRowStateUpToDate);
+
+    // A real update on offer outranks an old notice.
+    CDRManifest *newer = ManifestWithVersion(@"1.3", nil);
+    CDRUpdateDecision *available = [CDRUpdatePolicy decisionForRegistration:reg manifest:newer state:nil
+                                                                preferences:PrefsWithSoak(CDRSoakDurationOff)
+                                                               breakThrough:NO now:self.now];
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:reg lastDecision:available decidedManifest:newer
+                                                     lastError:nil ignored:NO
+                                                operationPhase:CDRUpdatePhaseIdle parked:NO context:context];
+    XCTAssertEqual(row.state, CDRAppRowStateAvailable);
+}
+
+- (void)testRetractionNoticeStoreRoundTripsAndToleratesGarbage {
+    NSString *suite = [NSString stringWithFormat:@"cdr-notice-tests-%@", NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    XCTAssertNil(CDRRetractionNoticeForBundleID(kBundleID, defaults));
+
+    NSDate *pulled = [NSDate dateWithTimeIntervalSinceReferenceDate:800000000];
+    CDRSetRetractionNotice([CDRRetractionNotice noticeWithVersion:@"1.2" advertisedAt:nil pulledAt:pulled],
+                           kBundleID, defaults);
+    CDRRetractionNotice *read = CDRRetractionNoticeForBundleID(kBundleID, defaults);
+    XCTAssertEqualObjects(read.version, @"1.2");
+    XCTAssertEqualObjects(read.pulledAt, pulled);
+    XCTAssertNil(read.advertisedAt);
+    XCTAssertNil(CDRRetractionNoticeForBundleID(@"com.example.other", defaults));
+
+    CDRSetRetractionNotice(nil, kBundleID, defaults);
+    XCTAssertNil(CDRRetractionNoticeForBundleID(kBundleID, defaults));
+    XCTAssertNil([defaults objectForKey:CDRRetractionNoticesDefaultsKey]);
+
+    for (id garbage in @[@"x", @{kBundleID: @"x"}, @{kBundleID: @{@"version": @"1.2"}},
+                         @{kBundleID: @{@"version": @7, @"pulled_at": pulled}}]) {
+        [defaults setObject:garbage forKey:CDRRetractionNoticesDefaultsKey];
+        XCTAssertNil(CDRRetractionNoticeForBundleID(kBundleID, defaults));
+    }
+    [defaults removePersistentDomainForName:suite];
 }
 
 @end
