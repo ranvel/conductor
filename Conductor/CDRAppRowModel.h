@@ -9,6 +9,7 @@
 
 @class CDRAppRegistration;
 @class CDRUpdateDecision;
+@class CDRUpdatePreferences;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -94,6 +95,8 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 @interface CDRAppRowContext : NSObject
 /// The organization on the installed bundle's signing certificate.
 @property (nonatomic, copy, nullable) NSString *developerName;
+/// The app's effective preferences (Settings with its override applied).
+@property (nonatomic, nullable) CDRUpdatePreferences *preferences;
 @end
 
 @interface CDRAppRowModel : NSObject
@@ -157,6 +160,11 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 @property (nonatomic, readonly) CDRUpdatePhase operationPhase;
 @property (nonatomic, readonly, nullable) NSString *errorDescription;
 @property (nonatomic, readonly, nullable) NSString *developerName;
+/// Categories shown in full for this app; the rest collapse to a one-line
+/// count. Everything, unless the context carried the user's preferences.
+@property (nonatomic, readonly) CDRReleaseNoteTypeSet shownTypes;
+/// The Developer interest scheme: also show manifest and entitlement detail.
+@property (nonatomic, readonly) BOOL exposesDeveloperDetail;
 
 /// Pure mapping — no I/O, no clock. Precedence: parked > working > ignored >
 /// lastError > decision > unknown.

@@ -56,6 +56,8 @@ typedef NS_ENUM(NSInteger, CDRButtonStyle) {
 /// outline for Retracted. Colors and glyph come from CDRPalette by type.
 @interface CDRBadgeView : NSView
 @property (nonatomic) CDRReleaseNoteType type;
+/// Label only, no glyph — for tight grids (the per-app popover).
+@property (nonatomic, getter=isCompact) BOOL compact;
 - (instancetype)initWithType:(CDRReleaseNoteType)type;
 @end
 

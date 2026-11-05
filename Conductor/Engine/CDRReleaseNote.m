@@ -42,6 +42,36 @@ BOOL CDRReleaseNoteTypeFromKey(NSString *key, CDRReleaseNoteType *outType) {
     return NO;
 }
 
+NSArray<NSString *> *CDRReleaseNoteKeysFromTypeSet(CDRReleaseNoteTypeSet set) {
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    for (NSInteger i = 0; i < CDRReleaseNoteTypeCount; i++) {
+        if (CDRReleaseNoteTypeSetContains(set, (CDRReleaseNoteType)i)) {
+            [keys addObject:CDRReleaseNoteTypeKey((CDRReleaseNoteType)i)];
+        }
+    }
+    return keys;
+}
+
+CDRReleaseNoteTypeSet CDRReleaseNoteTypeSetFromKeys(id keys) {
+    CDRReleaseNoteTypeSet set = CDRReleaseNoteTypeSetNone;
+    if (![keys isKindOfClass:[NSArray class]]) return set;
+    for (id key in (NSArray *)keys) {
+        CDRReleaseNoteType type;
+        if (CDRReleaseNoteTypeFromKey(key, &type)) set |= CDRReleaseNoteTypeSetWithType(type);
+    }
+    return set;
+}
+
+NSString *CDRReleaseNoteTypeSetDisplayList(CDRReleaseNoteTypeSet set) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSInteger i = 0; i < CDRReleaseNoteTypeCount; i++) {
+        if (CDRReleaseNoteTypeSetContains(set, (CDRReleaseNoteType)i)) {
+            [names addObject:CDRReleaseNoteTypeDisplayName((CDRReleaseNoteType)i)];
+        }
+    }
+    return [names componentsJoinedByString:@", "];
+}
+
 NSString *CDRReleaseNoteTypeDisplayName(CDRReleaseNoteType type) {
     switch (type) {
         case CDRReleaseNoteTypeNotice: return @"Notice";

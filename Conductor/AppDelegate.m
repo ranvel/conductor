@@ -92,6 +92,10 @@
     self.mainWindowController.onOpenSettings = ^{
         [weakSelf showSettingsWindow];
     };
+    self.mainWindowController.defaults = defaults;
+    self.mainWindowController.onPreferencesChanged = ^{
+        [weakSelf.updateController preferencesDidChange];
+    };
     self.menuBarController.onRowAction = onRowAction;
     self.menuBarController.onCheckAll = onCheckAll;
     self.menuBarController.onOpenWindow = ^{
@@ -194,6 +198,9 @@
         settings.onCadenceChanged = ^{
             weakSelf.scanScheduler.cadence = CDRScanCadenceFromDefaultsToken(
                 [defaults stringForKey:CDRScanCadenceDefaultsKey]);
+        };
+        settings.onPreferencesChanged = ^{
+            [weakSelf.updateController preferencesDidChange];
         };
         settings.onRequestFullNotificationAuthorization = ^{
             [weakSelf.notificationPresenter requestFullAuthorization];

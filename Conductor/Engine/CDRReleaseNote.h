@@ -46,6 +46,13 @@ typedef NS_OPTIONS(NSUInteger, CDRReleaseNoteTypeSet) {
 CDRReleaseNoteTypeSet CDRReleaseNoteTypeSetWithType(CDRReleaseNoteType type);
 BOOL CDRReleaseNoteTypeSetContains(CDRReleaseNoteTypeSet set, CDRReleaseNoteType type);
 
+/// A type set ↔ its keys, for persistence. Reading is garbage-tolerant:
+/// anything that is not an array of known keys contributes nothing.
+NSArray<NSString *> *CDRReleaseNoteKeysFromTypeSet(CDRReleaseNoteTypeSet set);
+CDRReleaseNoteTypeSet CDRReleaseNoteTypeSetFromKeys(id _Nullable keys);
+/// "Notice, Removed, Retracted" — the set's display names in the fixed order.
+NSString *CDRReleaseNoteTypeSetDisplayList(CDRReleaseNoteTypeSet set);
+
 /// Canonical lowercase key ↔ enum, in one place. Matching is exact: an
 /// unknown key is rejected, never guessed at.
 NSString *CDRReleaseNoteTypeKey(CDRReleaseNoteType type);

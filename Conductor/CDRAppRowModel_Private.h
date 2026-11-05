@@ -36,6 +36,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readwrite) CDRUpdatePhase operationPhase;
 @property (nonatomic, readwrite, nullable) NSString *errorDescription;
 @property (nonatomic, readwrite, nullable) NSString *developerName;
+@property (nonatomic, readwrite) CDRReleaseNoteTypeSet shownTypes;
+@property (nonatomic, readwrite) BOOL exposesDeveloperDetail;
 @end
 
 NS_ASSUME_NONNULL_END

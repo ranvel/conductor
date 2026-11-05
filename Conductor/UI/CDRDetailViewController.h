@@ -23,14 +23,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Every row, for the no-selection panes.
 @property (nonatomic, copy) NSArray<CDRAppRowModel *> *allRowModels;
 @property (nonatomic, nullable) NSDate *lastCheckDate;
-/// Categories shown in full; the rest collapse to a one-line count with a
-/// "Show" link. Defaults to everything (CND-4 feeds the user's choice).
-@property (nonatomic) CDRReleaseNoteTypeSet shownTypes;
 
 @property (nonatomic, copy, nullable) void (^onRowAction)(NSString *bundleID, CDRAppRowActions action);
 @property (nonatomic, copy, nullable) void (^onCheckAll)(void);
 @property (nonatomic, copy, nullable) void (^onScanAgain)(void);
-/// The per-app override button. Disabled while nil (CND-4 provides it).
+/// The per-app override button. Disabled while nil.
 @property (nonatomic, copy, nullable) void (^onShowOverrides)(NSString *bundleID, NSView *anchor);
 
 /// Feeds the progress bar of an in-flight pane without rebuilding it.

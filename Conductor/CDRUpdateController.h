@@ -53,6 +53,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Disk discovery + session filter. Cheap, synchronous, no network.
 - (void)rescan;
+/// A Settings value or a per-app override changed: rebuild the rows from the
+/// newly resolved preferences.
+- (void)preferencesDidChange;
 
 /// The global check (Check All / scheduler): every non-ignored app,
 /// breakThrough:NO — a passive sweep never breaks a deferral.

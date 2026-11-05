@@ -34,7 +34,6 @@ static const CGFloat kMaxContentWidth = 980;
     self = [super initWithNibName:nil bundle:nil];
     if (!self) return nil;
     _allRowModels = @[];
-    _shownTypes = CDRReleaseNoteTypeSetAll;
     _expandedKeys = [NSMutableSet set];
     _revealedKeys = [NSMutableSet set];
     return self;
@@ -107,7 +106,6 @@ static const CGFloat kMaxContentWidth = 980;
 - (void)setRowModel:(CDRAppRowModel *)rowModel { _rowModel = rowModel; [self reloadIfLoaded]; }
 - (void)setAllRowModels:(NSArray<CDRAppRowModel *> *)rows { _allRowModels = [rows copy]; [self reloadIfLoaded]; }
 - (void)setLastCheckDate:(NSDate *)date { _lastCheckDate = date; [self reloadIfLoaded]; }
-- (void)setShownTypes:(CDRReleaseNoteTypeSet)types { _shownTypes = types; [self reloadIfLoaded]; }
 - (void)setOnShowOverrides:(void (^)(NSString *, NSView *))block { _onShowOverrides = [block copy]; [self reloadIfLoaded]; }
 
 - (void)reloadIfLoaded {
@@ -671,7 +669,7 @@ static NSString *ShortDay(NSDate *date) {
     for (CDRReleaseNoteGroup *group in groups) {
         NSString *revealKey = [NSString stringWithFormat:@"%@|%@|%@", row.bundleID, release.version,
                                CDRReleaseNoteTypeKey(group.type)];
-        BOOL shown = CDRReleaseNoteTypeSetContains(self.shownTypes, group.type)
+        BOOL shown = CDRReleaseNoteTypeSetContains(row.shownTypes, group.type)
             || [self.revealedKeys containsObject:revealKey];
 
         if (shown) {

@@ -37,6 +37,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onScanAgain)(void);
 @property (nonatomic, copy, nullable) void (^onOpenSettings)(void);
 
+/// Where per-app overrides are stored. Setting it enables the detail
+/// header's override button, which opens the per-app popover.
+@property (nonatomic, nullable) NSUserDefaults *defaults;
+/// A per-app override changed in the popover.
+@property (nonatomic, copy, nullable) void (^onPreferencesChanged)(void);
+
 /// The right pane, for wiring the inputs later tickets add (shown
 /// categories, the per-app override popover).
 @property (nonatomic, readonly) CDRDetailViewController *detailViewController;

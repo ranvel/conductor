@@ -7,6 +7,7 @@
 #import "CDRAppListViewController.h"
 #import "CDRDetailViewController.h"
 #import "CDRDevModeSession.h"
+#import "CDROverridePopoverController.h"
 #import "CDRPalette.h"
 #import "CDRViews.h"
 #import "CDRWindowCopy.h"
@@ -37,6 +38,7 @@ static NSToolbarItemIdentifier const kSettingsItem = @"CDRToolbarSettings";
 @property (nonatomic) NSTextField *checkedLabel;
 @property (nonatomic) CDRButton *checkButton;
 @property (nonatomic) NSTimer *clockTimer;
+@property (nonatomic, nullable) NSPopover *overridePopover;
 @end
 
 @implementation CDRMainWindowController
@@ -292,6 +294,46 @@ static NSToolbarItemIdentifier const kSettingsItem = @"CDRToolbarSettings";
     self.checkedLabel.stringValue = CDRCheckedAgoString(self.lastCheckDate, [NSDate date]);
     self.checkButton.enabled = (self.rowModels.count > 0);
     self.window.title = summary.length > 0 ? [NSString stringWithFormat:@"Conductor — %@", summary] : @"Conductor";
+}
+
+#pragma mark - Per-app overrides
+
+- (void)setDefaults:(NSUserDefaults *)defaults {
+    _defaults = defaults;
+    __weak typeof(self) weakSelf = self;
+    self.detailViewController.onShowOverrides = defaults ? ^(NSString *bundleID, NSView *anchor) {
+        [weakSelf showOverridesForBundleID:bundleID anchor:anchor];
+    } : nil;
+}
+
+- (void)showOverridesForBundleID:(NSString *)bundleID anchor:(NSView *)anchor {
+    CDRAppRowModel *row = [self rowForBundleID:bundleID];
+    if (!row || !self.defaults) return;
+    [self.overridePopover close];
+
+    CDROverridePopoverController *content =
+        [[CDROverridePopoverController alloc] initWithBundleID:bundleID appName:row.appName
+                                                        appURL:row.appURL defaults:self.defaults];
+    NSPopover *popover = [[NSPopover alloc] init];
+    popover.behavior = NSPopoverBehaviorSemitransient;
+    popover.contentViewController = content;
+    __weak typeof(self) weakSelf = self;
+    __weak NSPopover *weakPopover = popover;
+    content.onChanged = ^{
+        // The rows are rebuilt from the new effective preferences; the
+        // popover stays open on its own (unchanged) anchor window.
+        if (weakSelf.onPreferencesChanged) weakSelf.onPreferencesChanged();
+    };
+    content.onDone = ^{
+        [weakPopover close];
+    };
+    self.overridePopover = popover;
+    // Anchor to the pane, not the button: every change rebuilds the header
+    // (and the button with it) while the popover is still open.
+    NSView *pane = self.detailViewController.view;
+    [popover showRelativeToRect:[anchor convertRect:anchor.bounds toView:pane]
+                         ofView:pane
+                  preferredEdge:NSRectEdgeMaxY];
 }
 
 #pragma mark - Actions

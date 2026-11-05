@@ -15,13 +15,30 @@ NSTimeInterval CDRSoakDurationInterval(CDRSoakDuration duration) {
         case CDRSoakDurationOff: return 0;
         case CDRSoakDurationOneDay: return 24.0 * 60.0 * 60.0;
         case CDRSoakDurationOneWeek: return 7.0 * 24.0 * 60.0 * 60.0;
+        case CDRSoakDurationThreeDays: return 3.0 * 24.0 * 60.0 * 60.0;
     }
     return 0;
+}
+
+NSArray<NSNumber *> *CDRSoakDurationChoices(void) {
+    return @[@(CDRSoakDurationOff), @(CDRSoakDurationOneDay),
+             @(CDRSoakDurationThreeDays), @(CDRSoakDurationOneWeek)];
+}
+
+NSString *CDRSoakDurationDisplayName(CDRSoakDuration duration) {
+    switch (duration) {
+        case CDRSoakDurationOff: return @"Off";
+        case CDRSoakDurationOneDay: return @"1 day";
+        case CDRSoakDurationThreeDays: return @"3 days";
+        case CDRSoakDurationOneWeek: return @"1 week";
+    }
+    return @"Off";
 }
 
 CDRSoakDuration CDRSoakDurationFromDefaultsToken(NSString *token) {
     if ([token isKindOfClass:[NSString class]]) {
         if ([token isEqualToString:@"1d"]) return CDRSoakDurationOneDay;
+        if ([token isEqualToString:@"3d"]) return CDRSoakDurationThreeDays;
         if ([token isEqualToString:@"1w"]) return CDRSoakDurationOneWeek;
     }
     return CDRSoakDurationOff;
@@ -32,6 +49,7 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
         case CDRSoakDurationOff: return @"off";
         case CDRSoakDurationOneDay: return @"1d";
         case CDRSoakDurationOneWeek: return @"1w";
+        case CDRSoakDurationThreeDays: return @"3d";
     }
     return @"off";
 }

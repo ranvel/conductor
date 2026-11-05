@@ -7,6 +7,7 @@
 #import "CDRAppRowModel_Private.h"
 #import "CDRAppRegistration.h"
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 #import "CDRManifest.h"
 #import "CDRVersion.h"
 #import "CDRErrors.h"
@@ -66,6 +67,7 @@ static NSString *MediumDate(NSDate *date) {
     self = [super init];
     if (!self) return nil;
     _releases = @[];
+    _shownTypes = CDRReleaseNoteTypeSetAll;
     return self;
 }
 
@@ -100,6 +102,10 @@ static NSString *MediumDate(NSDate *date) {
     model.vendorURL = registration.vendorURL;
     model.operationPhase = operationPhase;
     model.developerName = context.developerName;
+    if (context.preferences) {
+        model.shownTypes = context.preferences.shownTypes;
+        model.exposesDeveloperDetail = context.preferences.exposesDeveloperDetail;
+    }
 
     CDRAppRowActions ignoreToggle = ignored ? CDRAppRowActionUnignore : CDRAppRowActionIgnore;
 

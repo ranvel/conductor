@@ -256,6 +256,15 @@
                    fx, fy, (unsigned long)actual, (unsigned long)hex);
 }
 
+/// The design rows as a "Normal user" sees them: Security collapsed.
+- (NSArray<CDRAppRowModel *> *)designRowsHidingSecurity {
+    NSArray<CDRAppRowModel *> *rows = [CDRRowFixtures designRows];
+    for (CDRAppRowModel *row in rows) {
+        row.shownTypes = CDRReleaseNoteTypeSetAll & ~CDRReleaseNoteTypeSetSecurity;
+    }
+    return rows;
+}
+
 - (CDRMainWindowController *)windowWithRows:(NSArray<CDRAppRowModel *> *)rows {
     CDRDevModeSession *session = [CDRDevModeSession sessionFromArguments:@[@"conductor"] error:NULL];
     XCTAssertNotNil(session);
@@ -267,10 +276,9 @@
 }
 
 - (void)testMainWindowRendersInBothAppearances {
-    CDRMainWindowController *controller = [self windowWithRows:[CDRRowFixtures designRows]];
-    controller.selectedBundleID = [CDRRowFixtures designRowNamed:@"muwav"].bundleID;
     // The design's default: Security collapses to a one-line count.
-    controller.detailViewController.shownTypes = CDRReleaseNoteTypeSetAll & ~CDRReleaseNoteTypeSetSecurity;
+    CDRMainWindowController *controller = [self windowWithRows:[self designRowsHidingSecurity]];
+    controller.selectedBundleID = [CDRRowFixtures designRowNamed:@"muwav"].bundleID;
 
     controller.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
     NSBitmapImageRep *light = [self renderWindow:controller.window named:@"main-light"];
@@ -351,11 +359,10 @@
 }
 
 - (void)testSkippedVersionExpandsAndHiddenCategoryReveals {
-    CDRMainWindowController *controller = [self windowWithRows:[CDRRowFixtures designRows]];
+    CDRMainWindowController *controller = [self windowWithRows:[self designRowsHidingSecurity]];
     CDRAppRowModel *muwav = [CDRRowFixtures designRowNamed:@"muwav"];
     controller.selectedBundleID = muwav.bundleID;
     CDRDetailViewController *detail = controller.detailViewController;
-    detail.shownTypes = CDRReleaseNoteTypeSetAll & ~CDRReleaseNoteTypeSetSecurity;
 
     // Collapsed: the 1.3 row's notes and the security items are not drawn.
     XCTAssertFalse([self view:detail.view containsText:@"Lower memory use during playback."]);
@@ -376,7 +383,7 @@
     [self renderWindow:controller.window named:@"main-expanded-light"];
 
     // Both survive a refresh of the same rows.
-    controller.rowModels = [CDRRowFixtures designRows];
+    controller.rowModels = [self designRowsHidingSecurity];
     XCTAssertTrue([self view:detail.view containsText:@"Lower memory use during playback."]);
     XCTAssertTrue([self view:detail.view containsText:@"Artwork downloads now verify the server certificate."]);
 }
@@ -402,7 +409,8 @@
     XCTAssertEqualObjects(sentBundleID, fastmail.bundleID);
     XCTAssertEqual(sentAction, CDRAppRowActionAcknowledge);
 
-    // The per-app override button exists but is disabled until CND-4.
+    // The per-app override button is disabled until the window is told
+    // where overrides are stored.
     controller.selectedBundleID = muwav.bundleID;
     NSButton *override = nil;
     for (NSButton *button in [self buttonsIn:controller.detailViewController.view]) {

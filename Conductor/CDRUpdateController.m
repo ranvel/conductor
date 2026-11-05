@@ -13,6 +13,7 @@
 #import "CDRManifestFetcher.h"
 #import "CDRUpdateOperation.h"
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 #import "CDRUpdateStateStore.h"
 #import "CDRAppUpdateState.h"
 #import "CDRErrors.h"
@@ -133,6 +134,10 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     self.registrations = visible;
     [CDRSharedLog log:[NSString stringWithFormat:@"Scan: %lu managed app(s) found.",
                        (unsigned long)visible.count]];
+    [self rebuildRowModels];
+}
+
+- (void)preferencesDidChange {
     [self rebuildRowModels];
 }
 
@@ -579,6 +584,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             ? self.operationPhases[bundleID].integerValue : CDRUpdatePhaseIdle;
         CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
         context.developerName = [self developerNameForRegistration:reg];
+        context.preferences = [CDRPolicyResolver effectivePreferencesForBundleID:bundleID defaults:self.defaults];
         [rows addObject:[CDRAppRowModel modelForRegistration:reg
                                                 lastDecision:self.lastDecisions[bundleID]
                                              decidedManifest:self.lastManifests[bundleID]

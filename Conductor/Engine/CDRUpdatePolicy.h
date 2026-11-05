@@ -17,11 +17,19 @@ typedef NS_ENUM(NSInteger, CDRSoakDuration) {
     CDRSoakDurationOff = 0,
     CDRSoakDurationOneDay,
     CDRSoakDurationOneWeek,
+    /// Added in v2. Appended, not inserted, so the existing raw values and
+    /// tokens are untouched; use CDRSoakDurationChoices() for display order.
+    CDRSoakDurationThreeDays,
 };
 
 NSTimeInterval CDRSoakDurationInterval(CDRSoakDuration duration);
 
-/// NSUserDefaults token round-trip ("off" / "1d" / "1w"); garbage → Off.
+/// The durations in the order they are offered: Off, 1 day, 3 days, 1 week.
+NSArray<NSNumber *> *CDRSoakDurationChoices(void);
+/// "Off" / "1 day" / "3 days" / "1 week" — the user-facing name.
+NSString *CDRSoakDurationDisplayName(CDRSoakDuration duration);
+
+/// NSUserDefaults token round-trip ("off" / "1d" / "3d" / "1w"); garbage → Off.
 CDRSoakDuration CDRSoakDurationFromDefaultsToken(NSString * _Nullable token);
 NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration);
 

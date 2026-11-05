@@ -197,13 +197,22 @@ static const CGFloat kBadgeGlyphSize = 9.5;
     self.needsDisplay = YES;
 }
 
+- (void)setCompact:(BOOL)compact {
+    _compact = compact;
+    [self invalidateIntrinsicContentSize];
+    self.needsDisplay = YES;
+}
+
 - (NSFont *)labelFont { return [NSFont systemFontOfSize:12.5 weight:NSFontWeightSemibold]; }
+
+/// Where the label starts: after the glyph column, or right at the inset
+/// when the badge is compact.
+- (CGFloat)labelOriginX { return self.compact ? 8 : 9 + 14 + 5; }
 
 - (NSSize)intrinsicContentSize {
     NSSize text = [CDRReleaseNoteTypeDisplayName(self.type)
                    sizeWithAttributes:@{NSFontAttributeName: [self labelFont]}];
-    // 9 leading + glyph column (14) + 5 gap + label + 9 trailing.
-    return NSMakeSize(ceil(text.width) + 9 + 14 + 5 + 9, kBadgeHeight);
+    return NSMakeSize(ceil(text.width) + [self labelOriginX] + (self.compact ? 8 : 9), kBadgeHeight);
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -223,16 +232,19 @@ static const CGFloat kBadgeGlyphSize = 9.5;
         [path stroke];
     }
 
-    NSImage *glyph = [CDRSymbol([CDRPalette symbolNameForType:self.type], kBadgeGlyphSize, NSFontWeightBold)
-        imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[ink]]];
-    NSSize glyphSize = glyph.size;
-    [glyph drawInRect:NSMakeRect(9 + (14 - glyphSize.width) / 2, NSMidY(self.bounds) - glyphSize.height / 2,
-                                 glyphSize.width, glyphSize.height)];
+    if (!self.compact) {
+        NSImage *glyph = [CDRSymbol([CDRPalette symbolNameForType:self.type], kBadgeGlyphSize, NSFontWeightBold)
+            imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[ink]]];
+        NSSize glyphSize = glyph.size;
+        [glyph drawInRect:NSMakeRect(9 + (14 - glyphSize.width) / 2, NSMidY(self.bounds) - glyphSize.height / 2,
+                                     glyphSize.width, glyphSize.height)];
+    }
 
     NSDictionary *attributes = @{NSFontAttributeName: [self labelFont], NSForegroundColorAttributeName: ink};
     NSString *label = CDRReleaseNoteTypeDisplayName(self.type);
     NSSize text = [label sizeWithAttributes:attributes];
-    [label drawAtPoint:NSMakePoint(9 + 14 + 5, NSMidY(self.bounds) - text.height / 2) withAttributes:attributes];
+    [label drawAtPoint:NSMakePoint([self labelOriginX], NSMidY(self.bounds) - text.height / 2)
+        withAttributes:attributes];
 }
 
 @end
