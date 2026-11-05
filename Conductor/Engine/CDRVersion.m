@@ -31,6 +31,23 @@
     return NSOrderedSame;
 }
 
++ (nullable NSNumber *)majorComponentOf:(NSString *)version {
+    NSString *leading = [version componentsSeparatedByString:@"."].firstObject;
+    if (leading.length == 0) return nil;
+    NSScanner *scanner = [NSScanner scannerWithString:leading];
+    scanner.charactersToBeSkipped = nil;
+    long long value;
+    if (![scanner scanLongLong:&value] || !scanner.atEnd || value < 0) return nil;
+    return @(value);
+}
+
++ (BOOL)isMajorUpgradeFrom:(NSString *)installed to:(NSString *)candidate {
+    NSNumber *from = [self majorComponentOf:installed];
+    NSNumber *to = [self majorComponentOf:candidate];
+    if (!from || !to) return NO;
+    return to.longLongValue > from.longLongValue;
+}
+
 + (BOOL)isVersion:(NSString *)candidateShort
             build:(NSString *)candidateBuild
         newerThan:(NSString *)baselineShort

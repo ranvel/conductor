@@ -41,6 +41,14 @@ NS_ASSUME_NONNULL_BEGIN
                                  version:(NSString *)version
                                  urgency:(CDRUrgency)urgency;
 
+/// A surfaced update that waits on the user: held for a manual install, or
+/// stopped at a major version. Passive, and deliberately without an Install
+/// action — a held update is installed from the window, never from a banner.
+- (void)notifyUpdateNeedsAttentionForAppNamed:(NSString *)appName
+                                     bundleID:(NSString *)bundleID
+                                      version:(NSString *)version
+                                       reason:(NSString *)reason;
+
 /// Retraction State A discovered during a check (loud once; the state store
 /// was already cleared by the decision).
 - (void)notifyRetractedPending:(NSString *)message

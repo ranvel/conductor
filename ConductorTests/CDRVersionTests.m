@@ -47,4 +47,35 @@
     XCTAssertFalse([CDRVersion isVersion:@"1.0" build:@"5" newerThan:@"1.0" build:nil]);
 }
 
+#pragma mark - Major versions (CND-5)
+
+- (void)testMajorComponent {
+    XCTAssertEqualObjects([CDRVersion majorComponentOf:@"2.0.1"], @2);
+    XCTAssertEqualObjects([CDRVersion majorComponentOf:@"0.9"], @0);
+    XCTAssertEqualObjects([CDRVersion majorComponentOf:@"3"], @3);
+    XCTAssertEqualObjects([CDRVersion majorComponentOf:@"10.4"], @10);
+    for (NSString *bad in @[@"beta.3", @"v2.0", @"2b.1", @"", @".5", @"-1.0", @" 2.0"]) {
+        XCTAssertNil([CDRVersion majorComponentOf:bad], @"%@ has no numeric leading component", bad);
+    }
+}
+
+- (void)testMajorUpgradeMeansTheLeadingComponentGrew {
+    // "Major" is the leading component changing, not "reaching 1.0".
+    XCTAssertTrue([CDRVersion isMajorUpgradeFrom:@"0.9" to:@"1.0"]);
+    XCTAssertTrue([CDRVersion isMajorUpgradeFrom:@"2.0.1" to:@"3"]);
+    XCTAssertTrue([CDRVersion isMajorUpgradeFrom:@"1.9.9" to:@"10.0"]);
+
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"1.9" to:@"1.10"]);
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"1.2" to:@"1.4"]);
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"2.0" to:@"2.0"]);
+    // Going down is never a major *upgrade* (and is refused elsewhere anyway).
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"3.0" to:@"2.9"]);
+}
+
+- (void)testNonNumericLeadingComponentsAreNeverMajor {
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"beta.1" to:@"2.0"]);
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"1.0" to:@"next.0"]);
+    XCTAssertFalse([CDRVersion isMajorUpgradeFrom:@"a.1" to:@"b.1"]);
+}
+
 @end

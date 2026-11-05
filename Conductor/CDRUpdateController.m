@@ -25,6 +25,8 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
                                      CDRManifest *manifest) {
     switch (decision.outcome) {
         case CDRUpdateOutcomeAvailable:
+        case CDRUpdateOutcomeHeld:
+        case CDRUpdateOutcomeStoppedAtMajor:
             // Quiet re-sightings of a version the user was already told about.
             return ![manifest.version isEqualToString:previousState.lastNotifiedVersion];
         case CDRUpdateOutcomeRetractedPending:
@@ -137,7 +139,30 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     [self rebuildRowModels];
 }
 
+/// A Settings value or a per-app override changed. Every app with an update
+/// pending is decided again from the manifest already in hand, so removing a
+/// hold category, switching off the major stop or changing a deferral takes
+/// effect now rather than at the next check. Nothing is fetched and nothing
+/// is notified. Retraction notices are left alone: their decision was
+/// one-time and re-deciding would erase a notice the user hasn't read.
 - (void)preferencesDidChange {
+    for (CDRAppRegistration *reg in self.registrations) {
+        NSString *bundleID = reg.bundleID;
+        CDRManifest *manifest = self.lastManifests[bundleID];
+        CDRUpdateDecision *last = self.lastDecisions[bundleID];
+        if (!manifest || !last || self.operations[bundleID]) continue;
+        switch (last.outcome) {
+            case CDRUpdateOutcomeAvailable:
+            case CDRUpdateOutcomeDeferred:
+            case CDRUpdateOutcomeDeferredOffered:
+            case CDRUpdateOutcomeHeld:
+            case CDRUpdateOutcomeStoppedAtMajor:
+                [self evaluateManifest:manifest registration:reg breakThrough:NO notify:NO];
+                break;
+            default:
+                break;
+        }
+    }
     [self rebuildRowModels];
 }
 
@@ -193,29 +218,44 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             for (NSString *warning in manifest.parseWarnings) {
                 [CDRSharedLog log:[NSString stringWithFormat:@"%@: manifest — %@", bundleID, warning]];
             }
-            NSDate *now = [NSDate date];
-            CDRSoakDuration soak = CDRSoakDurationFromDefaultsToken(
-                [self.defaults stringForKey:CDRSoakDurationDefaultsKey]);
-            CDRAppUpdateState *previousState = [self.stateStore stateForBundleID:bundleID];
-            CDRUpdateDecision *decision = [CDRUpdatePolicy decisionForRegistration:reg
-                                                                          manifest:manifest
-                                                                             state:previousState
-                                                                      soakDuration:soak
-                                                                      breakThrough:breakThrough
-                                                                               now:now];
-            [self.stateStore putState:decision.stateAfterCheck];
-            self.lastDecisions[bundleID] = decision;
-            self.lastManifests[bundleID] = manifest;
-            [self handleDecision:decision manifest:manifest registration:reg previousState:previousState];
+            [self evaluateManifest:manifest registration:reg breakThrough:breakThrough notify:YES];
             [self rebuildRowModels];
         });
     }];
 }
 
+/// Runs the policy for one app against a manifest, with the preferences
+/// resolved for *that app* (Settings with its override applied), persists the
+/// resulting memory and reacts to the decision. `notify` is NO when nothing
+/// new was fetched — a preference change re-deciding the manifest already in
+/// hand must not post a notification about it.
+- (CDRUpdateDecision *)evaluateManifest:(CDRManifest *)manifest
+                           registration:(CDRAppRegistration *)reg
+                           breakThrough:(BOOL)breakThrough
+                                 notify:(BOOL)notify {
+    NSString *bundleID = reg.bundleID;
+    CDRUpdatePreferences *preferences =
+        [CDRPolicyResolver effectivePreferencesForBundleID:bundleID defaults:self.defaults];
+    CDRAppUpdateState *previousState = [self.stateStore stateForBundleID:bundleID];
+    CDRUpdateDecision *decision = [CDRUpdatePolicy decisionForRegistration:reg
+                                                                  manifest:manifest
+                                                                     state:previousState
+                                                               preferences:preferences
+                                                              breakThrough:breakThrough
+                                                                       now:[NSDate date]];
+    [self.stateStore putState:decision.stateAfterCheck];
+    self.lastDecisions[bundleID] = decision;
+    self.lastManifests[bundleID] = manifest;
+    [self handleDecision:decision manifest:manifest registration:reg
+           previousState:previousState notify:notify];
+    return decision;
+}
+
 - (void)handleDecision:(CDRUpdateDecision *)decision
               manifest:(CDRManifest *)manifest
           registration:(CDRAppRegistration *)reg
-         previousState:(nullable CDRAppUpdateState *)previousState {
+         previousState:(nullable CDRAppUpdateState *)previousState
+                notify:(BOOL)notify {
     NSString *bundleID = reg.bundleID;
     NSString *appName = reg.appURL.lastPathComponent.stringByDeletingPathExtension;
 
@@ -228,11 +268,28 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
                 [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@", bundleID,
                                    CDRUrgencyNoticeCopy(decision.urgency, appName, manifest.version)]];
             }
-            if (CDRDecisionWarrantsNotification(decision, previousState, manifest)) {
+            if (notify && CDRDecisionWarrantsNotification(decision, previousState, manifest)) {
                 [self.presenter notifyUpdateAvailableForAppNamed:appName
                                                         bundleID:bundleID
                                                          version:manifest.version
                                                          urgency:decision.urgency];
+            }
+            break;
+        }
+
+        case CDRUpdateOutcomeHeld:
+        case CDRUpdateOutcomeStoppedAtMajor: {
+            // Surfaced and installable — on a deliberate click only. The
+            // manifest is kept so that click works; nothing installs itself.
+            self.knownManifests[bundleID] = manifest;
+            NSString *reason = CDRUpdateGateReasonCopy(decision, reg.installedShortVersion, manifest.version);
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: update %@ is waiting for you — %@",
+                               bundleID, manifest.version, reason]];
+            if (notify && CDRDecisionWarrantsNotification(decision, previousState, manifest)) {
+                [self.presenter notifyUpdateNeedsAttentionForAppNamed:appName
+                                                             bundleID:bundleID
+                                                              version:manifest.version
+                                                               reason:reason];
             }
             break;
         }
@@ -278,7 +335,9 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             NSString *message = CDRRetractedPendingCopy(appName, decision.retractedVersion,
                                                         reg.installedShortVersion);
             [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@", bundleID, message]];
-            [self.presenter notifyRetractedPending:message bundleID:bundleID vendorURL:reg.vendorURL];
+            if (notify) {
+                [self.presenter notifyRetractedPending:message bundleID:bundleID vendorURL:reg.vendorURL];
+            }
             break;
         }
 
@@ -288,7 +347,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             NSString *message = CDRRetractedInstalledCopy(appName, decision.retractedVersion);
             [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@", bundleID, message]];
             NSString *key = [NSString stringWithFormat:@"%@|%@", bundleID, decision.retractedVersion];
-            if (![self.notifiedRecalledKeys containsObject:key]) {
+            if (notify && ![self.notifiedRecalledKeys containsObject:key]) {
                 [self.notifiedRecalledKeys addObject:key];
                 [self.presenter notifyRetractedInstalled:message bundleID:bundleID vendorURL:reg.vendorURL];
             }
@@ -362,6 +421,35 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         case CDRAppRowActionCancelPending:
             [self.operations[bundleID] cancelParkedUpdate];
             break;
+        case CDRAppRowActionInstallDeferred: {
+            // "Update now" on a deferred update: the click is the consent
+            // (deferral.md break-through). It marks the version notified —
+            // so retraction loudness applies from here on — and the update
+            // is then decided like any surfaced one. If one of the user's
+            // gates applies, the row moves to that gate instead of installing.
+            CDRAppRegistration *reg = [self registrationForBundleID:bundleID];
+            CDRManifest *manifest = self.lastManifests[bundleID];
+            CDRUpdateDecision *last = self.lastDecisions[bundleID];
+            if (!reg || !manifest || (last.outcome != CDRUpdateOutcomeDeferred
+                                      && last.outcome != CDRUpdateOutcomeDeferredOffered)) break;
+            [self.stateStore noteNotifiedVersion:manifest.version build:manifest.build
+                                     forBundleID:bundleID at:[NSDate date]];
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@ taken out of deferral at your request.",
+                               bundleID, manifest.version]];
+            CDRUpdateDecision *now = [self evaluateManifest:manifest registration:reg breakThrough:NO notify:NO];
+            if (now.outcome == CDRUpdateOutcomeAvailable) [self installApp:bundleID];
+            [self rebuildRowModels];
+            break;
+        }
+        case CDRAppRowActionAlwaysAllowMajor: {
+            CDRAppPolicyOverride *override = CDRAppPolicyOverrideForBundleID(bundleID, self.defaults);
+            override.stopAtMajorVersions = @NO;
+            CDRSetAppPolicyOverride(override, bundleID, self.defaults);
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: major versions are now always allowed for this app.",
+                               bundleID]];
+            [self preferencesDidChange];
+            break;
+        }
         case CDRAppRowActionAcknowledge:
             // "Got it" on a retraction notice. The decision that raised it
             // already cleared the notified memory, so a fresh passive check

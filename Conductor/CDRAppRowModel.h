@@ -37,9 +37,8 @@ typedef NS_ENUM(NSInteger, CDRAppRowState) {
     /// and is not installed. Nothing is installable.
     CDRAppRowStateRetracted,
 
-    // The states below are drawn by the main window now; the inputs that
-    // produce them arrive with CND-5 (Held, StoppedAtMajor) and CND-7
-    // (Inspecting, NeedsNetworkApproval).
+    // Inspecting and NeedsNetworkApproval are drawn by the main window now;
+    // the inputs that produce them arrive with CND-7.
 
     /// The update contains a note type the user installs by hand.
     CDRAppRowStateHeld,
@@ -65,6 +64,12 @@ typedef NS_OPTIONS(NSUInteger, CDRAppRowActions) {
     CDRAppRowActionCancelPending = 1 << 5,
     /// "Got it" on a retraction notice: the row goes back to up to date.
     CDRAppRowActionAcknowledge   = 1 << 6,
+    /// "Update now" on a deferred update: the user's consent to surface and
+    /// install it before its deferral ends (deferral.md break-through).
+    CDRAppRowActionInstallDeferred = 1 << 7,
+    /// "Always allow for this app" on a major-version stop: writes a per-app
+    /// override so this app no longer stops at major versions.
+    CDRAppRowActionAlwaysAllowMajor = 1 << 8,
 };
 
 /// The main window's left-pane sections, top to bottom.
@@ -165,6 +170,9 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 @property (nonatomic, readonly) CDRReleaseNoteTypeSet shownTypes;
 /// The Developer interest scheme: also show manifest and entitlement detail.
 @property (nonatomic, readonly) BOOL exposesDeveloperDetail;
+/// The app's resolved deferral as the user reads it ("3 days"); nil when
+/// the context carried no preferences or deferral is off.
+@property (nonatomic, readonly, nullable) NSString *deferralDurationName;
 
 /// Pure mapping — no I/O, no clock. Precedence: parked > working > ignored >
 /// lastError > decision > unknown.

@@ -68,9 +68,16 @@ static NSArray<NSDictionary *> *NoteDicts(NSArray<NSArray<NSString *> *> *pairs)
             row.contributesToBadge = YES;
             break;
         case CDRAppRowStateHeld:
-        case CDRAppRowStateStoppedAtMajor:
         case CDRAppRowStateNeedsNetworkApproval:
             row.actions = CDRAppRowActionInstall | CDRAppRowActionCheckNow | CDRAppRowActionIgnore;
+            break;
+        case CDRAppRowStateStoppedAtMajor:
+            row.actions = CDRAppRowActionInstall | CDRAppRowActionAlwaysAllowMajor
+                | CDRAppRowActionCheckNow | CDRAppRowActionIgnore;
+            break;
+        case CDRAppRowStateDeferred:
+            row.actions = CDRAppRowActionCheckNow | CDRAppRowActionInstallDeferred | CDRAppRowActionIgnore;
+            row.deferralDurationName = @"3 days";
             break;
         case CDRAppRowStateRetracted:
             row.noteTypes = CDRReleaseNoteTypeSetRetracted;

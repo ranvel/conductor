@@ -110,8 +110,8 @@ only the public docs.
 - `kSecCSCheckNestedCode` benchmark on large real-world bundles; flip the
   constant or document why not.
 - Per-app scan cadence configuration: v1 ships one global cadence (M3);
-  revisit with dogfood feedback. Distinct from per-app *soak* overrides,
-  which remain explicitly not planned.
+  revisit with dogfood feedback. (Per-app *deferral* overrides, once listed
+  as not planned, shipped in v2 — CND-4 / CND-5, see deferral.md.)
 - Edge inventory: App Translocation on Conductor itself, /Applications on
   unusual volumes, case-sensitive filesystems, multiple copies of a managed
   app, Gatekeeper policy changes in future macOS.
@@ -121,7 +121,7 @@ Exit: v1.0 tag, public release.
 
 ## Explicitly not planned
 
-Per-app soak overrides, custom soak durations, vendor post-install hooks
+Custom (free-form) deferral durations, vendor post-install hooks
 (never), automatic downgrade (never), patching inside bundles (never),
 managing unsigned apps, installer-package territory (kexts, system
 extensions, privileged helpers as a product feature).

@@ -19,6 +19,7 @@
 #import "CDRManifestFetcher.h"
 #import "CDRUpdateOperation.h"
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 #import "CDRUpdateStateStore.h"
 #import "CDRErrors.h"
 
@@ -31,6 +32,16 @@ static NSString * const kTesteeBundleID = @"com.ranvel.conductor-testee";
 static const int kPort = 8001;
 
 #pragma mark - Minimal operation delegate
+
+/// Preferences for a state-table row: the given deferral, no hold categories
+/// (beyond the always-on Retracted) and no major stop — so a row written
+/// about deferral or retraction is not also a statement about v2's gates.
+static CDRUpdatePreferences *PrefsWithSoak(CDRSoakDuration soak) {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.soakDuration = soak;
+    prefs.holdTypes = CDRReleaseNoteTypeSetNone;
+    return [prefs copy];
+}
 
 @interface CDRRetractionDrillDelegate : NSObject <CDRUpdateOperationDelegate>
 @property (nonatomic, copy) void (^onFinish)(NSError *error);
@@ -179,7 +190,7 @@ static const int kPort = 8001;
     CDRUpdateDecision *decision = [CDRUpdatePolicy decisionForRegistration:reg
                                                                   manifest:manifest
                                                                      state:[store stateForBundleID:reg.bundleID]
-                                                              soakDuration:soak
+                                                              preferences:PrefsWithSoak(soak)
                                                               breakThrough:breakThrough
                                                                        now:[NSDate date]];
     [store putState:decision.stateAfterCheck];

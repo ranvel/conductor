@@ -9,12 +9,23 @@
 
 #import <XCTest/XCTest.h>
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 #import "CDRAppRegistration.h"
 #import "CDRAppUpdateState.h"
 #import "CDRManifest.h"
 
 static const NSTimeInterval kHour = 60.0 * 60.0;
 static const NSTimeInterval kDay = 24.0 * kHour;
+
+/// Preferences for a state-table row: the given deferral, no hold categories
+/// (beyond the always-on Retracted) and no major stop — so a row written
+/// about deferral or retraction is not also a statement about v2's gates.
+static CDRUpdatePreferences *PrefsWithSoak(CDRSoakDuration soak) {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.soakDuration = soak;
+    prefs.holdTypes = CDRReleaseNoteTypeSetNone;
+    return [prefs copy];
+}
 
 @interface CDRUpdatePolicyTests : XCTestCase
 @property (nonatomic) NSURL *fixtureRoot;
@@ -111,7 +122,7 @@ static CDRManifest *ManifestWithVersion(NSString *version, NSString *urgencyToke
     return [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:installed build:nil]
                                            manifest:manifest
                                               state:state
-                                       soakDuration:soak
+                                       preferences:PrefsWithSoak(soak)
                                        breakThrough:breakThrough
                                                 now:self.now];
 }
@@ -418,6 +429,231 @@ static CDRManifest *ManifestWithVersion(NSString *version, NSString *urgencyToke
     NSString *copy = CDRRetractedInstalledCopy(@"Example", @"1.1");
     XCTAssertTrue([copy containsString:@"recalled build 1.1, which you have installed"]);
     XCTAssertTrue([copy containsString:@"does not downgrade automatically"]);
+}
+
+#pragma mark - Holds and major-version stops (CND-5)
+
+static CDRManifest *ManifestWithNotes(NSString *version, NSString *urgencyToken,
+                                      NSArray<NSString *> *noteTypes, NSDictionary<NSString *, NSArray<NSString *> *> *history) {
+    NSMutableArray *notes = [NSMutableArray array];
+    for (NSString *type in noteTypes) [notes addObject:@{@"type": type, @"text": [type stringByAppendingString:@" note"]}];
+    NSMutableArray *entries = [NSMutableArray array];
+    [history enumerateKeysAndObjectsUsingBlock:^(NSString *v, NSArray<NSString *> *types, BOOL *stop) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSString *type in types) [items addObject:@{@"type": type, @"text": @"skipped"}];
+        [entries addObject:@{@"version": v, @"notes": items}];
+    }];
+    NSMutableDictionary *dict = [@{
+        @"conductor_manifest": @1, @"bundle_id": kBundleID, @"version": version,
+        @"url": @"https://example.com/app.dmg", @"notes": notes, @"history": entries,
+    } mutableCopy];
+    if (urgencyToken) dict[@"urgency"] = urgencyToken;
+    return [CDRManifest manifestWithData:[NSJSONSerialization dataWithJSONObject:dict options:0 error:NULL] error:NULL];
+}
+
+/// Settings as shipped (holds Notice, Removed, Retracted), with the given
+/// deferral and major-stop switch.
+static CDRUpdatePreferences *Prefs(CDRSoakDuration soak, BOOL stopAtMajor) {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.soakDuration = soak;
+    prefs.stopAtMajorVersions = stopAtMajor;
+    return [prefs copy];
+}
+
+- (CDRUpdateDecision *)decideInstalled:(NSString *)installed manifest:(CDRManifest *)manifest
+                                 state:(CDRAppUpdateState *)state preferences:(CDRUpdatePreferences *)preferences
+                          breakThrough:(BOOL)breakThrough {
+    return [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:installed build:nil]
+                                           manifest:manifest state:state preferences:preferences
+                                       breakThrough:breakThrough now:self.now];
+}
+
+- (void)testH1_SurfacedUpdateWithAHoldTypeIsHeldAndMarkedNotified {
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"fixed", @"removed"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetRemoved);
+    XCTAssertFalse(d.stoppedAtMajor);
+    // Surfaced like any Available update: retraction loudness applies.
+    XCTAssertEqualObjects(d.stateAfterCheck.lastNotifiedVersion, @"1.4");
+    XCTAssertEqualObjects(CDRUpdateGateReasonCopy(d, @"1.3", @"1.4"), @"Held because it includes a removal.");
+}
+
+- (void)testH2_HeldTimesDeferred_HiddenIsHidden {
+    // Deferral is evaluated first: a soaking update is not surfaced, so no
+    // gate is consulted and nothing is marked notified.
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"removed"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOneWeek, YES) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeDeferred);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetNone);
+    XCTAssertFalse(d.stoppedAtMajor);
+    XCTAssertNil(d.stateAfterCheck.lastNotifiedVersion);
+    XCTAssertEqualObjects(d.deferredUntil, [self.now dateByAddingTimeInterval:7 * kDay]);
+}
+
+- (void)testH3_HeldTimesMatured {
+    CDRAppUpdateState *state = [self stateSeen:@"1.4" at:[self.now dateByAddingTimeInterval:-2 * kDay]
+                                      notified:nil at:nil];
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"notice"], nil)
+                                           state:state preferences:Prefs(CDRSoakDurationOneDay, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetNotice);
+    XCTAssertEqualObjects(d.stateAfterCheck.lastNotifiedVersion, @"1.4");
+}
+
+- (void)testH4_HeldTimesUrgency_UrgencyBypassesDeferralButNotTheHold {
+    // Urgency is the vendor's claim; the hold is the user's choice.
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3"
+                                        manifest:ManifestWithNotes(@"1.4", @"data_loss", @[@"removed"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOneWeek, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    XCTAssertEqual(d.urgency, CDRUrgencyDataLoss);
+    XCTAssertEqualObjects(d.stateAfterCheck.lastNotifiedVersion, @"1.4");
+    XCTAssertNil(d.deferredUntil);
+}
+
+- (void)testH5_HeldReShownWithoutRestampingNotified {
+    NSDate *earlier = [self.now dateByAddingTimeInterval:-3 * kDay];
+    CDRAppUpdateState *state = [self stateSeen:@"1.4" at:earlier notified:@"1.4" at:earlier];
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"removed"], nil)
+                                           state:state preferences:Prefs(CDRSoakDurationOneWeek, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    XCTAssertEqualObjects(d.stateAfterCheck.notifiedAt, earlier);
+}
+
+- (void)testH6_RemovingTheTypeFromHoldTypesReleasesTheHold {
+    CDRManifest *m = ManifestWithNotes(@"1.4", nil, @[@"removed", @"fixed"], nil);
+    CDRMutableUpdatePreferences *prefs = [Prefs(CDRSoakDurationOff, NO) mutableCopy];
+    prefs.holdTypes = prefs.holdTypes & ~CDRReleaseNoteTypeSetRemoved;
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:m state:nil preferences:[prefs copy] breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetNone);
+
+    // …and adding a type creates one.
+    prefs.holdTypes = prefs.holdTypes | CDRReleaseNoteTypeSetFixed;
+    d = [self decideInstalled:@"1.3" manifest:m state:nil preferences:[prefs copy] breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetFixed);
+}
+
+- (void)testH7_AHoldTypeInASkippedIntermediateReleaseHoldsToo {
+    // 1.2 → 1.4: 1.4 itself is harmless, but the user would also be taking
+    // 1.3, which removed something. 1.2's and 1.1's notes are not theirs.
+    CDRManifest *m = ManifestWithNotes(@"1.4", nil, @[@"fixed"],
+                                       @{@"1.3": @[@"removed"], @"1.2": @[@"notice"], @"1.1": @[@"notice"]});
+    CDRUpdateDecision *d = [self decideInstalled:@"1.2" manifest:m state:nil
+                                     preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetRemoved);
+
+    // From 1.3, that removal is already installed: nothing holds.
+    d = [self decideInstalled:@"1.3" manifest:m state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+}
+
+- (void)testH8_TypesOutsideHoldTypesDoNotHoldAndTheReasonNamesTheFirstHeldType {
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3"
+                                        manifest:ManifestWithNotes(@"1.4", nil, @[@"security", @"added", @"improved", @"fixed", @"disabled"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+
+    d = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"removed", @"fixed", @"notice"], nil)
+                        state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetNotice | CDRReleaseNoteTypeSetRemoved);
+    // Fixed order, not manifest order: Notice comes before Removed.
+    XCTAssertEqualObjects(CDRUpdateGateReasonCopy(d, @"1.3", @"1.4"), @"Held because it includes a notice.");
+}
+
+- (void)testH9_AForgedRetractedNoteCannotCreateAHold {
+    // Retracted is always in holdTypes, and never accepted from a manifest.
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"retracted", @"fixed"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+}
+
+- (void)testM1_MajorVersionWithTheStopOnIsStoppedAtMajor {
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:ManifestWithNotes(@"1.0", nil, @[@"added"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, YES) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeStoppedAtMajor);
+    XCTAssertTrue(d.stoppedAtMajor);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetNone);
+    XCTAssertEqualObjects(d.stateAfterCheck.lastNotifiedVersion, @"1.0");
+    XCTAssertEqualObjects(CDRUpdateGateReasonCopy(d, @"0.9", @"1.0"),
+        @"1.0 is a major version; you stop at major versions, so 0.9 stays installed until you choose.");
+}
+
+- (void)testM2_MinorBumpIsNotAMajorStop {
+    CDRUpdateDecision *d = [self decideInstalled:@"1.9" manifest:ManifestWithNotes(@"1.10", nil, @[@"added"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, YES) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+}
+
+- (void)testM3_StoppedAtMajorTimesDeferred_HiddenIsHidden {
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:ManifestWithNotes(@"1.0", nil, nil, nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationThreeDays, YES) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeDeferred);
+    XCTAssertFalse(d.stoppedAtMajor);
+    XCTAssertEqualObjects(d.deferredUntil, [self.now dateByAddingTimeInterval:3 * kDay]);
+}
+
+- (void)testM4_StoppedAtMajorTimesUrgency_UrgencyDoesNotBypassTheStop {
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:ManifestWithNotes(@"1.0", @"system_risk", nil, nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOneWeek, YES) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeStoppedAtMajor);
+    XCTAssertEqual(d.urgency, CDRUrgencySystemRisk);
+}
+
+- (void)testM5_MajorVersionWithTheStopOffIsAvailable {
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:ManifestWithNotes(@"1.0", nil, @[@"added"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+}
+
+- (void)testHM_HeldAndStoppedTogether_MajorStopWinsTheLineAndBothGatesAreRecorded {
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:ManifestWithNotes(@"1.0", nil, @[@"removed"], nil)
+                                           state:nil preferences:Prefs(CDRSoakDurationOff, YES) breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeStoppedAtMajor);
+    XCTAssertTrue(d.stoppedAtMajor);
+    XCTAssertEqual(d.heldTypes, CDRReleaseNoteTypeSetRemoved);
+    XCTAssertEqualObjects(CDRUpdateGateReasonCopy(d, @"0.9", @"1.0"),
+        @"1.0 is a major version; you stop at major versions, so 0.9 stays installed until you choose. It also includes a removal.");
+}
+
+- (void)testPerAppDeferralHoldsAnAppWhileSettingsIsOffAndCheckNowBreaksThrough {
+    CDRUpdatePreferences *global = Prefs(CDRSoakDurationOff, NO);
+    CDRAppPolicyOverride *override = [[CDRAppPolicyOverride alloc] init];
+    override.soakDuration = @(CDRSoakDurationOneWeek);
+    CDRUpdatePreferences *effective = [CDRPolicyResolver effectivePreferencesWithGlobal:global override:override];
+    CDRManifest *m = ManifestWithNotes(@"1.1", nil, @[@"fixed"], nil);
+
+    XCTAssertEqual([self decideInstalled:@"1.0" manifest:m state:nil preferences:global breakThrough:NO].outcome,
+                   CDRUpdateOutcomeAvailable, @"an app following Settings sees it at once");
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil preferences:effective breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeDeferred);
+    XCTAssertEqualObjects(d.deferredUntil, [self.now dateByAddingTimeInterval:7 * kDay]);
+
+    d = [self decideInstalled:@"1.0" manifest:m state:nil preferences:effective breakThrough:YES];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeDeferredOffered);
+    XCTAssertNil(d.stateAfterCheck.lastNotifiedVersion);
+}
+
+- (void)testAHeldUpdateThatIsLaterRetractedIsLoud {
+    // Held marks notified, so pulling the build afterwards is a broken promise.
+    CDRUpdateDecision *held = [self decideInstalled:@"1.3" manifest:ManifestWithNotes(@"1.4", nil, @[@"removed"], nil)
+                                              state:nil preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(held.outcome, CDRUpdateOutcomeHeld);
+
+    // Not installed yet → State A.
+    CDRUpdateDecision *a = [self decideInstalled:@"1.3" manifest:ManifestWithVersion(@"1.3", nil)
+                                           state:held.stateAfterCheck preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(a.outcome, CDRUpdateOutcomeRetractedPending);
+    XCTAssertEqualObjects(a.retractedVersion, @"1.4");
+
+    // Installed deliberately, then pulled → State B.
+    CDRUpdateDecision *b = [self decideInstalled:@"1.4" manifest:ManifestWithVersion(@"1.3", nil)
+                                           state:held.stateAfterCheck preferences:Prefs(CDRSoakDurationOff, NO) breakThrough:NO];
+    XCTAssertEqual(b.outcome, CDRUpdateOutcomeRetractedInstalled);
+    XCTAssertEqualObjects(b.retractedVersion, @"1.4");
 }
 
 @end

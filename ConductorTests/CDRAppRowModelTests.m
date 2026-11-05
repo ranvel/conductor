@@ -14,9 +14,20 @@
 #import "CDRAppUpdateState.h"
 #import "CDRManifest.h"
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 #import "CDRErrors.h"
 
 static NSString * const kBundleID = @"com.example.app";
+
+/// Preferences for a state-table row: the given deferral, no hold categories
+/// (beyond the always-on Retracted) and no major stop — so a row written
+/// about deferral or retraction is not also a statement about v2's gates.
+static CDRUpdatePreferences *PrefsWithSoak(CDRSoakDuration soak) {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.soakDuration = soak;
+    prefs.holdTypes = CDRReleaseNoteTypeSetNone;
+    return [prefs copy];
+}
 
 @interface CDRAppRowModelTests : XCTestCase
 @property (nonatomic) NSURL *fixtureRoot;
@@ -84,7 +95,7 @@ static CDRManifest *ManifestWithVersion(NSString *version, NSString *urgencyToke
     return [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:installed]
                                            manifest:manifest
                                               state:state
-                                       soakDuration:soak
+                                       preferences:PrefsWithSoak(soak)
                                        breakThrough:breakThrough
                                                 now:self.now];
 }
@@ -448,6 +459,79 @@ static CDRManifest *ManifestWithNotes(NSString *version, NSArray<NSArray<NSStrin
     XCTAssertEqualObjects(row.developerName, @"Cedar Syntax LLC");
     XCTAssertEqualObjects(row.appURL, reg.appURL);
     XCTAssertEqualObjects(row.installedVersion, @"1.0");
+}
+
+#pragma mark - Holds and major stops (CND-5)
+
+- (CDRUpdateDecision *)decideInstalled:(NSString *)installed manifest:(CDRManifest *)manifest
+                           stopAtMajor:(BOOL)stopAtMajor {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.stopAtMajorVersions = stopAtMajor;
+    return [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:installed]
+                                           manifest:manifest state:nil preferences:[prefs copy]
+                                       breakThrough:NO now:self.now];
+}
+
+- (void)testHeldRowNeedsYouAndInstallsOnlyByItsOwnButton {
+    CDRManifest *m = ManifestWithNotes(@"1.4", @[@[@"fixed", @"f"], @[@"removed", @"r"]], nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.3" manifest:m stopAtMajor:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeHeld);
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.3" decision:d manifest:m];
+
+    XCTAssertEqual(row.state, CDRAppRowStateHeld);
+    XCTAssertEqual(row.section, CDRAppRowSectionNeedsYou);
+    XCTAssertEqual(row.heldTypes, CDRReleaseNoteTypeSetRemoved);
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Held · includes a removal");
+    XCTAssertEqual(row.stateTone, CDRAppRowToneAttention);
+    XCTAssertTrue(row.actions & CDRAppRowActionInstall);
+    XCTAssertTrue(row.contributesToBadge);
+    XCTAssertEqualObjects(row.availableVersion, @"1.4");
+    XCTAssertEqualObjects(row.versionPairDisplay, @"1.3 → 1.4");
+    XCTAssertTrue([row.stateLine containsString:@"held for manual install"]);
+    XCTAssertTrue([row.stateLine containsString:@"includes a removal"]);
+}
+
+- (void)testStoppedAtMajorRowOffersAlwaysAllowAndInstall {
+    CDRManifest *m = ManifestWithNotes(@"1.0", @[@[@"added", @"a"]], nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:m stopAtMajor:YES];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeStoppedAtMajor);
+    CDRAppRowModel *row = [self modelWithInstalled:@"0.9" decision:d manifest:m];
+
+    XCTAssertEqual(row.state, CDRAppRowStateStoppedAtMajor);
+    XCTAssertEqual(row.section, CDRAppRowSectionNeedsYou);
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Stopped at major version");
+    XCTAssertTrue(row.actions & CDRAppRowActionInstall);
+    XCTAssertTrue(row.actions & CDRAppRowActionAlwaysAllowMajor);
+    XCTAssertEqual(row.heldTypes, CDRReleaseNoteTypeSetNone);
+    XCTAssertTrue([row.stateLine containsString:@"stopped at major version"]);
+}
+
+- (void)testHeldAndStoppedTogetherShowTheMajorStopAndKeepTheHeldTypes {
+    CDRManifest *m = ManifestWithNotes(@"1.0", @[@[@"removed", @"r"]], nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"0.9" manifest:m stopAtMajor:YES];
+    CDRAppRowModel *row = [self modelWithInstalled:@"0.9" decision:d manifest:m];
+    XCTAssertEqual(row.state, CDRAppRowStateStoppedAtMajor);
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Stopped at major version");
+    XCTAssertEqual(row.heldTypes, CDRReleaseNoteTypeSetRemoved);
+}
+
+- (void)testDeferredRowOffersUpdateNowAndNamesTheDeferral {
+    CDRManifest *m = ManifestWithNotes(@"1.1", @[@[@"fixed", @"f"]], nil);
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.soakDuration = CDRSoakDurationThreeDays;
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:@"1.0"];
+    CDRUpdateDecision *d = [CDRUpdatePolicy decisionForRegistration:reg manifest:m state:nil
+                                                        preferences:[prefs copy] breakThrough:NO now:self.now];
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+    context.preferences = [prefs copy];
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:reg lastDecision:d decidedManifest:m
+                                                     lastError:nil ignored:NO
+                                                operationPhase:CDRUpdatePhaseIdle parked:NO context:context];
+    XCTAssertEqual(row.state, CDRAppRowStateDeferred);
+    XCTAssertTrue(row.actions & CDRAppRowActionInstallDeferred);
+    XCTAssertFalse(row.actions & CDRAppRowActionInstall, @"a deferred update is never one plain click from installing");
+    XCTAssertEqualObjects(row.deferralDurationName, @"3 days");
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Deferred · 3 days left");
 }
 
 @end

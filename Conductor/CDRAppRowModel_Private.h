@@ -38,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readwrite, nullable) NSString *developerName;
 @property (nonatomic, readwrite) CDRReleaseNoteTypeSet shownTypes;
 @property (nonatomic, readwrite) BOOL exposesDeveloperDetail;
+@property (nonatomic, readwrite, nullable) NSString *deferralDurationName;
 @end
 
 NS_ASSUME_NONNULL_END

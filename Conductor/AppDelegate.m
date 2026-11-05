@@ -353,6 +353,21 @@
                                                        urgency:urgency];
 }
 
+- (void)notifyUpdateNeedsAttentionForAppNamed:(NSString *)appName
+                                     bundleID:(NSString *)bundleID
+                                      version:(NSString *)version
+                                       reason:(NSString *)reason {
+    // No Install action: tapping lands on the app in the window, where the
+    // deliberate click lives.
+    [self.notificationPresenter postNoticeWithTitle:
+        [NSString stringWithFormat:@"%@ %@ is waiting for you", appName, version]
+                                               body:reason
+                                           bundleID:bundleID
+                                            version:version
+                                           category:CDRNotificationCategoryInstalled
+                                          vendorURL:nil];
+}
+
 - (void)notifyRetractedPending:(NSString *)message
                       bundleID:(NSString *)bundleID
                      vendorURL:(NSURL *)vendorURL {

@@ -105,6 +105,10 @@ static NSString *MediumDate(NSDate *date) {
     if (context.preferences) {
         model.shownTypes = context.preferences.shownTypes;
         model.exposesDeveloperDetail = context.preferences.exposesDeveloperDetail;
+        if (context.preferences.soakDuration != CDRSoakDurationOff) {
+            model.deferralDurationName =
+                CDRSoakDurationDisplayName(context.preferences.soakDuration).lowercaseString;
+        }
     }
 
     CDRAppRowActions ignoreToggle = ignored ? CDRAppRowActionUnignore : CDRAppRowActionIgnore;
@@ -177,7 +181,36 @@ static NSString *MediumDate(NSDate *date) {
             model.deferredUntil = decision.deferredUntil;
             model.stateLine = [NSString stringWithFormat:@"%@ deferred until %@",
                                manifest.version, MediumDate(decision.deferredUntil)];
-            model.actions = CDRAppRowActionCheckNow | ignoreToggle;
+            model.actions = CDRAppRowActionCheckNow | CDRAppRowActionInstallDeferred | ignoreToggle;
+            break;
+        }
+
+        case CDRUpdateOutcomeHeld: {
+            // Surfaced, installable — but only on a deliberate click.
+            [model adoptUpdateFromManifest:manifest installedVersion:registration.installedShortVersion];
+            model.state = CDRAppRowStateHeld;
+            model.heldTypes = decision.heldTypes;
+            model.availableVersion = manifest.version;
+            model.stateLine = [NSString stringWithFormat:@"%@ held for manual install — %@",
+                               manifest.version,
+                               CDRUpdateGateReasonCopy(decision, registration.installedShortVersion,
+                                                       manifest.version)];
+            model.actions = CDRAppRowActionInstall | CDRAppRowActionCheckNow | ignoreToggle;
+            model.contributesToBadge = YES;
+            break;
+        }
+
+        case CDRUpdateOutcomeStoppedAtMajor: {
+            [model adoptUpdateFromManifest:manifest installedVersion:registration.installedShortVersion];
+            model.state = CDRAppRowStateStoppedAtMajor;
+            // A hold may apply as well; the major stop takes the state line.
+            model.heldTypes = decision.heldTypes;
+            model.availableVersion = manifest.version;
+            model.stateLine = [NSString stringWithFormat:@"%@ stopped at major version (installed: %@)",
+                               manifest.version, registration.installedShortVersion];
+            model.actions = CDRAppRowActionInstall | CDRAppRowActionAlwaysAllowMajor
+                | CDRAppRowActionCheckNow | ignoreToggle;
+            model.contributesToBadge = YES;
             break;
         }
 

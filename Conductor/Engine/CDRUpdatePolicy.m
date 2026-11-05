@@ -4,6 +4,7 @@
 //
 
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 #import "CDRAppRegistration.h"
 #import "CDRAppUpdateState.h"
 #import "CDRVersion.h"
@@ -61,6 +62,7 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
                   deferredUntil:(NSDate *)deferredUntil
                retractedVersion:(NSString *)retractedVersion
                         urgency:(CDRUrgency)urgency
+                      heldTypes:(CDRReleaseNoteTypeSet)heldTypes
                 stateAfterCheck:(CDRAppUpdateState *)stateAfterCheck;
 @end
 
@@ -70,10 +72,13 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
                   deferredUntil:(NSDate *)deferredUntil
                retractedVersion:(NSString *)retractedVersion
                         urgency:(CDRUrgency)urgency
+                      heldTypes:(CDRReleaseNoteTypeSet)heldTypes
                 stateAfterCheck:(CDRAppUpdateState *)stateAfterCheck {
     self = [super init];
     if (self) {
         _outcome = outcome;
+        _heldTypes = heldTypes;
+        _stoppedAtMajor = (outcome == CDRUpdateOutcomeStoppedAtMajor);
         _deferredUntil = deferredUntil;
         _retractedVersion = retractedVersion;
         _urgency = urgency;
@@ -89,9 +94,10 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
 + (CDRUpdateDecision *)decisionForRegistration:(CDRAppRegistration *)registration
                                       manifest:(CDRManifest *)manifest
                                          state:(CDRAppUpdateState *)state
-                                  soakDuration:(CDRSoakDuration)soakDuration
+                                   preferences:(CDRUpdatePreferences *)preferences
                                   breakThrough:(BOOL)breakThrough
                                            now:(NSDate *)now {
+    CDRSoakDuration soakDuration = preferences.soakDuration;
     NSString *latest = manifest.version;
     NSString *installed = registration.installedShortVersion;
     CDRAppUpdateState *prior = state
@@ -108,8 +114,32 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
                                                 deferredUntil:deferredUntil
                                              retractedVersion:retracted
                                                       urgency:manifest.urgency
+                                                    heldTypes:CDRReleaseNoteTypeSetNone
                                               stateAfterCheck:after];
         };
+
+    // The user's two gates, applied only to an update that is being surfaced
+    // (every path below that used to end in plain Available). Notes are
+    // display data and the manifest is unauthenticated, so a gate can only
+    // ever ask for one more deliberate click — it is never a security input,
+    // and nothing here reaches verification.
+    CDRUpdateDecision *(^surfaced)(CDRAppUpdateState *) = ^(CDRAppUpdateState *after) {
+        CDRReleaseNoteTypeSet present = CDRReleaseNoteTypeSetNone;
+        for (CDRRelease *release in [manifest releasesNewerThanVersion:installed]) {
+            present |= release.typeSet;   // the advertised release and every skipped one
+        }
+        CDRReleaseNoteTypeSet held = present & preferences.holdTypes;
+        BOOL major = preferences.stopAtMajorVersions
+            && [CDRVersion isMajorUpgradeFrom:installed to:latest];
+        CDRUpdateOutcome outcome = major ? CDRUpdateOutcomeStoppedAtMajor
+            : (held != CDRReleaseNoteTypeSetNone ? CDRUpdateOutcomeHeld : CDRUpdateOutcomeAvailable);
+        return [[CDRUpdateDecision alloc] initWithOutcome:outcome
+                                            deferredUntil:nil
+                                         retractedVersion:nil
+                                                  urgency:manifest.urgency
+                                                heldTypes:held
+                                          stateAfterCheck:after];
+    };
 
     // Retraction is only observable as a transition against what was surfaced
     // (retraction.md: "detection requires memory") — never inferred from
@@ -151,25 +181,25 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
     // re-check, and user consent are all unconditional (deferral.md). Marking
     // notified means retraction loudness now applies to this version.
     if (manifest.urgency != CDRUrgencyNone) {
-        return decision(CDRUpdateOutcomeAvailable, nil, nil, notifiedState);
+        return surfaced(notifiedState);
     }
 
     // Already surfaced: re-show without re-gating on soak (and without
     // refreshing notified_at — the promise was already made).
     if (notified && [CDRVersion compare:latest to:notified] == NSOrderedSame) {
-        return decision(CDRUpdateOutcomeAvailable, nil, nil, ingested);
+        return surfaced(ingested);
     }
 
     if (soakDuration == CDRSoakDurationOff) {
-        return decision(CDRUpdateOutcomeAvailable, nil, nil, notifiedState);
+        return surfaced(notifiedState);
     }
 
-    // Maturity keys on the *current* setting each check — changing the global
-    // soak retroactively re-gates, the correct reading of "one global value."
+    // Maturity keys on the *current* resolved setting each check — changing
+    // the deferral (in Settings or for this app) retroactively re-gates.
     NSDate *firstSeen = ingested.firstSeenByVersion[latest];
     NSTimeInterval soak = CDRSoakDurationInterval(soakDuration);
     if ([now timeIntervalSinceDate:firstSeen] >= soak) {
-        return decision(CDRUpdateOutcomeAvailable, nil, nil, notifiedState);
+        return surfaced(notifiedState);
     }
 
     // Soaking. A break-through offers it honestly but does NOT mark it
@@ -182,6 +212,23 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
 @end
 
 #pragma mark - Copy
+
+NSString *CDRUpdateGateReasonCopy(CDRUpdateDecision *decision, NSString *installedVersion, NSString *version) {
+    NSString *held = nil;
+    for (NSInteger i = 0; i < CDRReleaseNoteTypeCount; i++) {
+        if (CDRReleaseNoteTypeSetContains(decision.heldTypes, (CDRReleaseNoteType)i)) {
+            // Name the first held type in the fixed order.
+            held = [NSString stringWithFormat:@"includes %@", CDRReleaseNoteTypeNounPhrase((CDRReleaseNoteType)i)];
+            break;
+        }
+    }
+    if (decision.stoppedAtMajor) {
+        NSString *major = [NSString stringWithFormat:@"%@ is a major version; you stop at major versions, so %@ stays installed until you choose.",
+                           version, installedVersion];
+        return held ? [major stringByAppendingFormat:@" It also %@.", held] : major;
+    }
+    return held ? [NSString stringWithFormat:@"Held because it %@.", held] : @"Held for manual install.";
+}
 
 NSString *CDRUrgencyNoticeCopy(CDRUrgency urgency, NSString *appName, NSString *version) {
     NSString *reason = nil;

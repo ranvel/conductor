@@ -9,10 +9,14 @@
 @class CDRAppRegistration;
 @class CDRAppUpdateState;
 
+@class CDRUpdatePreferences;
+
 NS_ASSUME_NONNULL_BEGIN
 
-/// The global soak setting (deferral.md): Off / 1 day / 1 week, one value for
-/// all managed apps, no per-app overrides.
+/// How long a new version stays hidden (deferral.md): Off / 1 day / 3 days /
+/// 1 week. Settings holds one value for all managed apps; an app may
+/// override it (CDRAppPolicyOverride). The policy is always handed the
+/// resolved value for the app it is deciding about.
 typedef NS_ENUM(NSInteger, CDRSoakDuration) {
     CDRSoakDurationOff = 0,
     CDRSoakDurationOneDay,
@@ -34,8 +38,8 @@ CDRSoakDuration CDRSoakDurationFromDefaultsToken(NSString * _Nullable token);
 NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration);
 
 /// The NSUserDefaults key holding the soak token. The key and token format are
-/// the durable contract. Until the M3 preferences panel exists this is set via
-/// `defaults write`; there is deliberately no control on the main window.
+/// the durable contract. It is the Settings-wide value; per-app overrides live
+/// under CDRAppPolicyOverridesDefaultsKey (CDRUpdatePreferences.h).
 /// "Soak" is spec/internal terminology (deferral.md) — user-facing copy says
 /// "deferred" / "update settings", never "soak".
 extern NSString * const CDRSoakDurationDefaultsKey;
@@ -62,6 +66,13 @@ typedef NS_ENUM(NSInteger, CDRUpdateOutcome) {
     /// identically to UpToDate — the distinct value exists so tests can assert
     /// the silence (retraction.md: no promise was made, no correction is owed).
     CDRUpdateOutcomeDroppedSilently,
+    /// A surfaced update that contains a note type the user installs by hand
+    /// (`heldTypes`). Installable, but only on a deliberate click.
+    CDRUpdateOutcomeHeld,
+    /// A surfaced update whose leading version component is greater than the
+    /// installed one's, while the user stops at major versions. Takes the
+    /// state line over Held; `heldTypes` still says whether a hold applies too.
+    CDRUpdateOutcomeStoppedAtMajor,
 };
 
 /// What one check concluded, plus the record to persist afterward.
@@ -73,6 +84,11 @@ typedef NS_ENUM(NSInteger, CDRUpdateOutcome) {
 @property (nonatomic, readonly, nullable) NSString *retractedVersion;
 /// Copied from the manifest so the caller can render the urgency notice.
 @property (nonatomic, readonly) CDRUrgency urgency;
+/// The user's hold categories present in this update — the advertised
+/// release or any skipped one. Set on Held and StoppedAtMajor, empty otherwise.
+@property (nonatomic, readonly) CDRReleaseNoteTypeSet heldTypes;
+/// Whether the major-version stop applies (YES exactly on StoppedAtMajor).
+@property (nonatomic, readonly) BOOL stoppedAtMajor;
 /// The record to persist after this check: ingestion always, notified-marking
 /// on Available, clearing on State A. A DeferredOffered decision does NOT
 /// mark notified — that happens only on the user's install consent
@@ -80,8 +96,14 @@ typedef NS_ENUM(NSInteger, CDRUpdateOutcome) {
 @property (nonatomic, readonly) CDRAppUpdateState *stateAfterCheck;
 @end
 
-/// The pure decision function: (registration, manifest, stored state, soak
-/// setting, break-through, now) → decision. No I/O, no defaults, no clock —
+/// The pure decision function: (registration, manifest, stored state, the
+/// app's resolved preferences, break-through, now) → decision.
+///
+/// Order: deferral is evaluated first (hidden is hidden). Only an update
+/// that would otherwise be surfaced is then checked against the user's two
+/// gates — the major-version stop, then the hold categories. Urgency is the
+/// vendor's claim and bypasses deferral only; it never bypasses a gate the
+/// user set. No I/O, no defaults, no clock —
 /// every transition in the deferral.md / retraction.md state tables is
 /// unit-testable offline. Nothing below this layer (the update operation and
 /// its verification chain) ever sees soak, urgency, or stored state.
@@ -90,7 +112,7 @@ typedef NS_ENUM(NSInteger, CDRUpdateOutcome) {
 + (CDRUpdateDecision *)decisionForRegistration:(CDRAppRegistration *)registration
                                       manifest:(CDRManifest *)manifest
                                          state:(nullable CDRAppUpdateState *)state
-                                  soakDuration:(CDRSoakDuration)soakDuration
+                                   preferences:(CDRUpdatePreferences *)preferences
                                   breakThrough:(BOOL)breakThrough
                                            now:(NSDate *)now;
 
@@ -103,6 +125,11 @@ typedef NS_ENUM(NSInteger, CDRUpdateOutcome) {
 /// Urgency copy is rendered as the *vendor's* claim ("The developer has
 /// flagged …"): the manifest is unauthenticated, so attributing the assertion
 /// bounds a forged flag's damage to embarrassment, not compromise (deferral.md).
+/// Why a surfaced update is waiting on the user, as one sentence:
+/// "Held because it includes a removal." / "1.0 is a major version; you stop
+/// at major versions." — the major stop first when both apply.
+NSString *CDRUpdateGateReasonCopy(CDRUpdateDecision *decision, NSString *installedVersion, NSString *version);
+
 NSString *CDRUrgencyNoticeCopy(CDRUrgency urgency, NSString *appName, NSString *version);
 NSString *CDRDeferredOfferCopy(NSString *appName, NSString *version, NSDate *deferredUntil);
 NSString *CDRRetractedPendingCopy(NSString *appName, NSString *retractedVersion, NSString *installedVersion);

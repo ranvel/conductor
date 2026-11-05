@@ -405,10 +405,11 @@ static NSString *ShortDay(NSDate *date) {
                                            body:[NSString stringWithFormat:
                 @"You stop at major versions, so %@ stays installed until you choose.", row.installedVersion]];
             [self addSection:card spacingBefore:18];
-            // CND-5 wires "Always allow for this app" to a per-app override.
-            CDRButton *always = [CDRButton buttonWithTitle:@"Always allow for this app"
-                                                     style:CDRButtonStyleSecondary target:nil action:NULL];
-            always.enabled = NO;
+            // Writes a per-app override, so this app stops stopping.
+            CDRButton *always = [self actionButton:@"Always allow for this app"
+                                             style:CDRButtonStyleSecondary
+                                            action:CDRAppRowActionAlwaysAllowMajor];
+            always.enabled = (row.actions & CDRAppRowActionAlwaysAllowMajor) != 0;
             CDRButton *install = [self actionButton:[NSString stringWithFormat:@"Install %@", version]
                                               style:CDRButtonStylePrimary action:CDRAppRowActionInstall];
             install.enabled = (row.actions & CDRAppRowActionInstall) != 0;
@@ -535,17 +536,21 @@ static NSString *ShortDay(NSDate *date) {
               : [NSString stringWithFormat:@"Deferred for %ld more %@", (long)days, days == 1 ? @"day" : @"days"];
     }
     NSString *version = row.advertisedVersion ?: @"The new build";
-    NSString *body = row.deferredUntil
-        ? [NSString stringWithFormat:@"Your update settings hold new builds for a while before they show up. %@ appears on %@.",
-           version, ShortDay(row.deferredUntil)]
+    NSString *wait = row.deferralDurationName
+        ? [NSString stringWithFormat:@"You wait %@ before new builds show up.", row.deferralDurationName]
         : @"Your update settings hold new builds for a while before they show up.";
+    NSString *body = row.deferredUntil
+        ? [NSString stringWithFormat:@"%@ %@ appears on %@.", wait, version, ShortDay(row.deferredUntil)]
+        : wait;
     [self addSection:[self cardWithSymbol:@"clock" title:title body:body] spacingBefore:22];
 
-    // "Update now" is the deliberate per-app check that breaks through a
-    // deferral (deferral.md); "Keep waiting" changes nothing.
+    // "Update now" is the user's consent to take this build out of deferral
+    // (deferral.md break-through); "Keep waiting" changes nothing.
     CDRButton *keep = [CDRButton buttonWithTitle:@"Keep waiting" style:CDRButtonStyleSecondary
                                           target:self action:@selector(keepWaitingClicked:)];
-    CDRButton *update = [self actionButton:@"Update now" style:CDRButtonStylePrimary action:CDRAppRowActionCheckNow];
+    CDRButton *update = [self actionButton:@"Update now" style:CDRButtonStylePrimary
+                                    action:CDRAppRowActionInstallDeferred];
+    update.enabled = (row.actions & CDRAppRowActionInstallDeferred) != 0;
     [self addSection:[self buttonRow:@[keep, update]] spacingBefore:14];
 }
 

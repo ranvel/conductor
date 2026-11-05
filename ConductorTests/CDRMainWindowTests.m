@@ -409,6 +409,28 @@
     XCTAssertEqualObjects(sentBundleID, fastmail.bundleID);
     XCTAssertEqual(sentAction, CDRAppRowActionAcknowledge);
 
+    // The deferred pane: "Update now" is the break-through consent, and
+    // "Keep waiting" sends nothing at all.
+    CDRAppRowModel *xkcd = [CDRRowFixtures designRowNamed:@"xkcd Adopted"];
+    controller.selectedBundleID = xkcd.bundleID;
+    XCTAssertTrue([self view:controller.detailViewController.view
+                containsText:@"You wait 3 days before new builds show up."]);
+    sentAction = CDRAppRowActionNone;
+    [[self buttonIn:controller.detailViewController.view withTitle:@"Keep waiting"] performClick:nil];
+    XCTAssertEqual(sentAction, CDRAppRowActionNone);
+    [[self buttonIn:controller.detailViewController.view withTitle:@"Update now"] performClick:nil];
+    XCTAssertEqualObjects(sentBundleID, xkcd.bundleID);
+    XCTAssertEqual(sentAction, CDRAppRowActionInstallDeferred);
+
+    // The major-stop pane's two buttons.
+    CDRAppRowModel *unxip = [CDRRowFixtures designRowNamed:@"Swift Unxip"];
+    controller.selectedBundleID = unxip.bundleID;
+    [[self buttonIn:controller.detailViewController.view withTitle:@"Always allow for this app"] performClick:nil];
+    XCTAssertEqual(sentAction, CDRAppRowActionAlwaysAllowMajor);
+    [[self buttonIn:controller.detailViewController.view withTitle:@"Install 1.0"] performClick:nil];
+    XCTAssertEqualObjects(sentBundleID, unxip.bundleID);
+    XCTAssertEqual(sentAction, CDRAppRowActionInstall);
+
     // The per-app override button is disabled until the window is told
     // where overrides are stored.
     controller.selectedBundleID = muwav.bundleID;

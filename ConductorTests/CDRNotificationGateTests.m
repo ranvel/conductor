@@ -12,8 +12,19 @@
 #import "CDRAppUpdateState.h"
 #import "CDRManifest.h"
 #import "CDRUpdatePolicy.h"
+#import "CDRUpdatePreferences.h"
 
 static NSString * const kBundleID = @"com.example.app";
+
+/// Preferences for a state-table row: the given deferral, no hold categories
+/// (beyond the always-on Retracted) and no major stop — so a row written
+/// about deferral or retraction is not also a statement about v2's gates.
+static CDRUpdatePreferences *PrefsWithSoak(CDRSoakDuration soak) {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.soakDuration = soak;
+    prefs.holdTypes = CDRReleaseNoteTypeSetNone;
+    return [prefs copy];
+}
 
 @interface CDRNotificationGateTests : XCTestCase
 @property (nonatomic) NSURL *fixtureRoot;
@@ -70,7 +81,7 @@ static CDRManifest *ManifestWithVersion(NSString *version) {
     return [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:installed]
                                            manifest:manifest
                                               state:state
-                                       soakDuration:soak
+                                       preferences:PrefsWithSoak(soak)
                                        breakThrough:NO
                                                 now:self.now];
 }
@@ -143,6 +154,33 @@ static CDRManifest *ManifestWithVersion(NSString *version) {
                                                  soak:CDRSoakDurationOff];
     XCTAssertEqual(stateB.outcome, CDRUpdateOutcomeRetractedInstalled);
     XCTAssertFalse(CDRDecisionWarrantsNotification(stateB, notified, same));
+}
+
+#pragma mark - Held and major-stop updates (CND-5)
+
+- (void)testHeldAndStoppedUpdatesNotifyOncePerVersionLikeAvailableOnes {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{
+        @"conductor_manifest": @1, @"bundle_id": kBundleID, @"version": @"2.0",
+        @"url": @"https://example.com/app.dmg",
+        @"notes": @[@{@"type": @"removed", @"text": @"gone"}],
+    } options:0 error:NULL];
+    CDRManifest *m = [CDRManifest manifestWithData:data error:NULL];
+
+    for (NSNumber *stop in @[@NO, @YES]) {
+        CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+        prefs.stopAtMajorVersions = stop.boolValue;
+        CDRUpdateDecision *first = [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                                   manifest:m state:nil preferences:[prefs copy]
+                                                               breakThrough:NO now:self.now];
+        XCTAssertEqual(first.outcome, stop.boolValue ? CDRUpdateOutcomeStoppedAtMajor : CDRUpdateOutcomeHeld);
+        XCTAssertTrue(CDRDecisionWarrantsNotification(first, nil, m), @"first sighting is announced");
+
+        CDRUpdateDecision *again = [CDRUpdatePolicy decisionForRegistration:[self registrationWithInstalledVersion:@"1.0"]
+                                                                   manifest:m state:first.stateAfterCheck
+                                                                preferences:[prefs copy] breakThrough:NO now:self.now];
+        XCTAssertEqual(again.outcome, first.outcome);
+        XCTAssertFalse(CDRDecisionWarrantsNotification(again, first.stateAfterCheck, m), @"re-sightings are quiet");
+    }
 }
 
 @end

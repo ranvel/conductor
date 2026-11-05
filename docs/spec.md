@@ -391,19 +391,27 @@ and click is honored.
 ## 8. Deferral and the urgency vocabulary
 
 Users may configure Conductor to hold newly observed versions back for a
-fixed window (off, one day, or one week — their choice, global, not
-yours) before being told about them. The clock starts when *their*
+fixed window (off, one day, three days, or one week — their choice, for
+all their apps or for yours alone, never yours to set) before being told
+about them. The clock starts when *their*
 Conductor first observes the version, not from any date you publish — a
 manifest date could be backdated to defeat the window. Expect adoption of
 a release to ramp over about a week, exactly as it would with manual
 downloads; a version you recall during its window quietly never existed
 for most users.
 
+Users may also ask to install certain updates by hand: any update whose
+notes (§3.5) include a category they chose — by default `notice` and
+`removed` — and, if they turn it on, any update that changes your leading
+version component (`0.9` → `1.0`, `2.x` → `3.0`). Such an update is shown
+to them like any other; it simply waits for a deliberate click.
+
 A manifest MAY carry an `urgency` token when a release fixes something
 genuinely dangerous. Its only effect is to **skip the deferral window** —
 notify users now. It changes nothing else: verification (§5), the
 pre-install recall re-check (§7), and the user's consent to install are
-all unconditional.
+all unconditional, and an update the user holds for a manual install
+still waits for that install.
 
 The vocabulary is closed, and deliberately contains no mild option:
 

@@ -345,7 +345,9 @@ static const CGFloat kHeaderHeight = 34;
 
     struct { CDRAppRowActions action; NSString *title; } entries[] = {
         { CDRAppRowActionInstall,       @"Install" },
+        { CDRAppRowActionInstallDeferred, @"Update Now" },
         { CDRAppRowActionCheckNow,      @"Check Now" },
+        { CDRAppRowActionAlwaysAllowMajor, @"Always Allow Major Versions" },
         { CDRAppRowActionCancelPending, @"Cancel Pending Update" },
         { CDRAppRowActionAcknowledge,   @"Got It" },
         { CDRAppRowActionVendorSite,    @"Developer's Site" },

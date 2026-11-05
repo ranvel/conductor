@@ -22,6 +22,16 @@ NS_ASSUME_NONNULL_BEGIN
 /// Whether the candidate (short version + optional build) is strictly newer
 /// than the baseline. Short versions are compared first; an equal short
 /// version falls through to the build numbers when both are present.
+/// The leading component as a number ("2.0.1" → 2, "0.9" → 0), or nil when
+/// it isn't purely numeric ("beta.3", "v2").
++ (nullable NSNumber *)majorComponentOf:(NSString *)version;
+
+/// Whether going from `installed` to `candidate` crosses a major version:
+/// the leading component grew. "Major" means that component changed, not
+/// "reached 1.0" — 0.9 → 1.0 is major, 1.9 → 1.10 is not. A non-numeric
+/// leading component on either side is never treated as major.
++ (BOOL)isMajorUpgradeFrom:(NSString *)installed to:(NSString *)candidate;
+
 + (BOOL)isVersion:(NSString *)candidateShort
             build:(nullable NSString *)candidateBuild
       newerThan:(NSString *)baselineShort
