@@ -16,7 +16,7 @@
 #import "CDRNotificationPresenter.h"
 #import "CDRScanScheduler.h"
 #import "CDRSettingsWindowController.h"
-#import "CDRStatusWindowController.h"
+#import "CDRMainWindowController.h"
 #import "CDRUpdateController.h"
 #import "CDRUpdatePolicy.h"
 #import "CDRUpdateStateStore.h"
@@ -27,7 +27,7 @@
 @property (strong) IBOutlet NSWindow *window;
 @property (nonatomic) CDRDevModeSession *session;
 @property (nonatomic) CDRUpdateController *updateController;
-@property (nonatomic) CDRStatusWindowController *statusWindowController;
+@property (nonatomic) CDRMainWindowController *mainWindowController;
 @property (nonatomic) CDRMenuBarController *menuBarController;
 @property (nonatomic) CDRNotificationPresenter *notificationPresenter;
 @property (nonatomic) CDRScanScheduler *scanScheduler;
@@ -40,7 +40,7 @@
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    // The template xib's window is unused; the status window is programmatic.
+    // The template xib's window is unused; the main window is programmatic.
     [self.window orderOut:nil];
 
     NSError *sessionError = nil;
@@ -63,7 +63,7 @@
                defaults:[NSUserDefaults standardUserDefaults]];
     self.updateController.presenter = self;
 
-    self.statusWindowController = [[CDRStatusWindowController alloc] initWithSession:self.session];
+    self.mainWindowController = [[CDRMainWindowController alloc] initWithSession:self.session];
     self.menuBarController = [[CDRMenuBarController alloc] initWithSession:self.session];
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -81,20 +81,27 @@
         [weakSelf rowModelsChanged];
     };
     self.updateController.onProgressChanged = ^(BOOL active, double fraction, NSString *detail) {
-        [weakSelf.statusWindowController setProgressActive:active fraction:fraction detail:detail];
+        [weakSelf.mainWindowController setProgressActive:active fraction:fraction detail:detail];
     };
-    self.statusWindowController.onRowAction = onRowAction;
-    self.statusWindowController.onCheckAll = onCheckAll;
+    self.mainWindowController.onRowAction = onRowAction;
+    self.mainWindowController.onCheckAll = onCheckAll;
+    self.mainWindowController.onScanAgain = ^{
+        [weakSelf.updateController rescan];
+        [weakSelf.updateController checkAllPassive];
+    };
+    self.mainWindowController.onOpenSettings = ^{
+        [weakSelf showSettingsWindow];
+    };
     self.menuBarController.onRowAction = onRowAction;
     self.menuBarController.onCheckAll = onCheckAll;
     self.menuBarController.onOpenWindow = ^{
-        [weakSelf showStatusWindow];
+        [weakSelf showMainWindow];
     };
     self.menuBarController.onOpenSettings = ^{
         [weakSelf showSettingsWindow];
     };
     [self wireAppMenuSettingsItem];
-    [self wireWindowMenuLogItem];
+    [self wireWindowMenuItems];
 
     self.notificationPresenter = [[CDRNotificationPresenter alloc] init];
     [self.notificationPresenter requestProvisionalAuthorization];
@@ -110,8 +117,9 @@
             [[NSWorkspace sharedWorkspace] openURL:vendorURL];
         } else {
             // Plain tap / View: there is no API to open a status-item menu,
-            // so the window is the landing surface.
-            [self showStatusWindow];
+            // so the window is the landing surface — on the app in question.
+            self.mainWindowController.selectedBundleID = bundleID;
+            [self showMainWindow];
         }
     };
 
@@ -133,7 +141,7 @@
 
     [self cleanStaleStaging];
     [self.updateController rescan];
-    [self showStatusWindow];
+    [self showMainWindow];
 
     if (self.session.devModeEnabled) {
         [CDRSharedLog log:
@@ -144,7 +152,8 @@
 
 - (void)rowModelsChanged {
     NSArray<CDRAppRowModel *> *rows = self.updateController.rowModels;
-    self.statusWindowController.rowModels = rows;
+    self.mainWindowController.rowModels = rows;
+    self.mainWindowController.lastCheckDate = self.updateController.lastCheckDate;
     self.menuBarController.rowModels = rows;
     self.settingsWindowController.rowModels = rows;
 
@@ -161,10 +170,10 @@
     }
 }
 
-- (void)showStatusWindow {
+- (void)showMainWindow {
     [NSApp activateIgnoringOtherApps:YES];
-    [self.statusWindowController showWindow:nil];
-    [self.statusWindowController.window makeKeyAndOrderFront:nil];
+    [self.mainWindowController showWindow:nil];
+    [self.mainWindowController.window makeKeyAndOrderFront:nil];
 }
 
 - (void)showSettingsWindow {
@@ -206,15 +215,24 @@
     [self.logWindowController.window makeKeyAndOrderFront:nil];
 }
 
-/// The activity log's menu entry point (Window ▸ Activity Log, ⌘L) — the
-/// window itself is created lazily on first show.
-- (void)wireWindowMenuLogItem {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Activity Log"
-                                                  action:@selector(logMenuItemChosen:)
-                                           keyEquivalent:@"l"];
-    item.target = self;
-    [NSApp.windowsMenu insertItem:item atIndex:0];
-    [NSApp.windowsMenu insertItem:[NSMenuItem separatorItem] atIndex:1];
+/// Window ▸ Conductor (⌘0) reopens the main window after it is closed;
+/// Window ▸ Activity Log (⌘L) opens the log, created lazily on first show.
+- (void)wireWindowMenuItems {
+    NSMenuItem *main = [[NSMenuItem alloc] initWithTitle:@"Conductor"
+                                                  action:@selector(mainWindowMenuItemChosen:)
+                                           keyEquivalent:@"0"];
+    main.target = self;
+    NSMenuItem *log = [[NSMenuItem alloc] initWithTitle:@"Activity Log"
+                                                 action:@selector(logMenuItemChosen:)
+                                          keyEquivalent:@"l"];
+    log.target = self;
+    [NSApp.windowsMenu insertItem:main atIndex:0];
+    [NSApp.windowsMenu insertItem:log atIndex:1];
+    [NSApp.windowsMenu insertItem:[NSMenuItem separatorItem] atIndex:2];
+}
+
+- (void)mainWindowMenuItemChosen:(id)sender {
+    [self showMainWindow];
 }
 
 - (void)logMenuItemChosen:(id)sender {
@@ -248,7 +266,7 @@
     [NSApp setActivationPolicy:target];
     // Policy switches can drop key-window status; restore it.
     [NSApp activateIgnoringOtherApps:YES];
-    [self.statusWindowController.window makeKeyAndOrderFront:nil];
+    [self.mainWindowController.window makeKeyAndOrderFront:nil];
 }
 
 /// Staging left behind by a crashed or interrupted run is garbage: the swap is
@@ -398,7 +416,7 @@
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
-    if (!flag) [self showStatusWindow];
+    if (!flag) [self showMainWindow];
     return YES;
 }
 

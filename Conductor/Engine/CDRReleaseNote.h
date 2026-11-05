@@ -54,6 +54,13 @@ BOOL CDRReleaseNoteTypeFromKey(NSString * _Nullable key, CDRReleaseNoteType * _N
 /// The badge label ("Notice", "Removed", …).
 NSString *CDRReleaseNoteTypeDisplayName(CDRReleaseNoteType type);
 
+/// The type as a thing an update "includes": "a removal", "a security fix", …
+/// Used where one type has to be named in a sentence.
+NSString *CDRReleaseNoteTypeNounPhrase(CDRReleaseNoteType type);
+
+/// A counted phrase for a collapsed category: "2 security fixes", "1 removal".
+NSString *CDRReleaseNoteTypeCountPhrase(CDRReleaseNoteType type, NSUInteger count);
+
 /// YES for the seven types a manifest may carry; NO for Retracted.
 BOOL CDRReleaseNoteTypeIsDeveloperAuthored(CDRReleaseNoteType type);
 

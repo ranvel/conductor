@@ -7,6 +7,7 @@
 #import <AppKit/AppKit.h>
 #import "CDRAppScanner.h"
 #import "CDRAppRegistration.h"
+#import "CDRBundleInspector.h"
 #import "CDRDevModeSession.h"
 #import "CDRManifest.h"
 #import "CDRManifestFetcher.h"
@@ -65,6 +66,10 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 /// "bundleID|version" pairs whose State B notice was surfaced this launch
 /// (re-shown once per launch, never a nag timer — roadmap M2 decision).
 @property (nonatomic) NSMutableSet<NSString *> *notifiedRecalledKeys;
+/// appURL path → signing organization, read once per bundle path (display
+/// only). NSNull marks "looked, found nothing" so unsigned apps aren't re-read.
+@property (nonatomic) NSMutableDictionary<NSString *, id> *developerNames;
+@property (nonatomic, readwrite, nullable) NSDate *lastCheckDate;
 @end
 
 @implementation CDRUpdateController
@@ -93,6 +98,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     _downloadFractions = [NSMutableDictionary dictionary];
     _reachedDownloadBundleIDs = [NSMutableSet set];
     _notifiedRecalledKeys = [NSMutableSet set];
+    _developerNames = [NSMutableDictionary dictionary];
     return self;
 }
 
@@ -176,6 +182,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             }
 
             [self.lastErrors removeObjectForKey:bundleID];
+            self.lastCheckDate = [NSDate date];
             // Release notes are display data: anything the parser dropped is
             // said here, once per check, and changes nothing else.
             for (NSString *warning in manifest.parseWarnings) {
@@ -349,6 +356,13 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         }
         case CDRAppRowActionCancelPending:
             [self.operations[bundleID] cancelParkedUpdate];
+            break;
+        case CDRAppRowActionAcknowledge:
+            // "Got it" on a retraction notice. The decision that raised it
+            // already cleared the notified memory, so a fresh passive check
+            // lands on plain "up to date" and replaces the notice.
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: retraction notice acknowledged.", bundleID]];
+            [self checkApp:bundleID userInitiated:NO];
             break;
         default:
             break;
@@ -543,6 +557,19 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
                        bundleID, vendorURL.absoluteString]];
 }
 
+/// The signing organization shown beside the app's name. Read from the
+/// installed bundle's certificate once per path; display only.
+- (nullable NSString *)developerNameForRegistration:(CDRAppRegistration *)reg {
+    NSString *key = reg.appURL.path;
+    if (!key) return nil;
+    id cached = self.developerNames[key];
+    if (!cached) {
+        cached = [CDRBundleInspector developerNameForBundleAtURL:reg.appURL] ?: [NSNull null];
+        self.developerNames[key] = cached;
+    }
+    return cached == [NSNull null] ? nil : cached;
+}
+
 - (void)rebuildRowModels {
     NSSet<NSString *> *ignored = CDRIgnoredBundleIDs(self.defaults);
     NSMutableArray<CDRAppRowModel *> *rows = [NSMutableArray arrayWithCapacity:self.registrations.count];
@@ -550,13 +577,16 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         NSString *bundleID = reg.bundleID;
         CDRUpdatePhase phase = self.operationPhases[bundleID]
             ? self.operationPhases[bundleID].integerValue : CDRUpdatePhaseIdle;
+        CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+        context.developerName = [self developerNameForRegistration:reg];
         [rows addObject:[CDRAppRowModel modelForRegistration:reg
                                                 lastDecision:self.lastDecisions[bundleID]
                                              decidedManifest:self.lastManifests[bundleID]
                                                    lastError:self.lastErrors[bundleID]
                                                      ignored:[ignored containsObject:bundleID]
                                               operationPhase:phase
-                                                      parked:[self.parkedBundleIDs containsObject:bundleID]]];
+                                                      parked:[self.parkedBundleIDs containsObject:bundleID]
+                                                     context:context]];
     }
     self.rowModels = rows;
     if (self.onRowModelsChanged) self.onRowModelsChanged();

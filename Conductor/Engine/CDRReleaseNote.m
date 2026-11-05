@@ -56,6 +56,35 @@ NSString *CDRReleaseNoteTypeDisplayName(CDRReleaseNoteType type) {
     return @"";
 }
 
+NSString *CDRReleaseNoteTypeNounPhrase(CDRReleaseNoteType type) {
+    switch (type) {
+        case CDRReleaseNoteTypeNotice: return @"a notice";
+        case CDRReleaseNoteTypeRemoved: return @"a removal";
+        case CDRReleaseNoteTypeDisabled: return @"a disabled feature";
+        case CDRReleaseNoteTypeSecurity: return @"a security fix";
+        case CDRReleaseNoteTypeAdded: return @"an addition";
+        case CDRReleaseNoteTypeImproved: return @"an improvement";
+        case CDRReleaseNoteTypeFixed: return @"a fix";
+        case CDRReleaseNoteTypeRetracted: return @"a retraction";
+    }
+    return @"";
+}
+
+NSString *CDRReleaseNoteTypeCountPhrase(CDRReleaseNoteType type, NSUInteger count) {
+    NSString *singular = @"note", *plural = @"notes";
+    switch (type) {
+        case CDRReleaseNoteTypeNotice: singular = @"notice"; plural = @"notices"; break;
+        case CDRReleaseNoteTypeRemoved: singular = @"removal"; plural = @"removals"; break;
+        case CDRReleaseNoteTypeDisabled: singular = @"disabled feature"; plural = @"disabled features"; break;
+        case CDRReleaseNoteTypeSecurity: singular = @"security fix"; plural = @"security fixes"; break;
+        case CDRReleaseNoteTypeAdded: singular = @"addition"; plural = @"additions"; break;
+        case CDRReleaseNoteTypeImproved: singular = @"improvement"; plural = @"improvements"; break;
+        case CDRReleaseNoteTypeFixed: singular = @"fix"; plural = @"fixes"; break;
+        case CDRReleaseNoteTypeRetracted: singular = @"retraction"; plural = @"retractions"; break;
+    }
+    return [NSString stringWithFormat:@"%lu %@", (unsigned long)count, count == 1 ? singular : plural];
+}
+
 BOOL CDRReleaseNoteTypeIsDeveloperAuthored(CDRReleaseNoteType type) {
     return type >= CDRReleaseNoteTypeNotice && type < CDRReleaseNoteTypeRetracted;
 }

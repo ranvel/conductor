@@ -65,6 +65,18 @@
     }
 }
 
+- (void)testPhrasesForSentencesAndCounts {
+    XCTAssertEqualObjects(CDRReleaseNoteTypeNounPhrase(CDRReleaseNoteTypeRemoved), @"a removal");
+    XCTAssertEqualObjects(CDRReleaseNoteTypeNounPhrase(CDRReleaseNoteTypeAdded), @"an addition");
+    XCTAssertEqualObjects(CDRReleaseNoteTypeCountPhrase(CDRReleaseNoteTypeSecurity, 2), @"2 security fixes");
+    XCTAssertEqualObjects(CDRReleaseNoteTypeCountPhrase(CDRReleaseNoteTypeSecurity, 1), @"1 security fix");
+    XCTAssertEqualObjects(CDRReleaseNoteTypeCountPhrase(CDRReleaseNoteTypeFixed, 3), @"3 fixes");
+    for (NSInteger i = 0; i < CDRReleaseNoteTypeCount; i++) {
+        XCTAssertGreaterThan(CDRReleaseNoteTypeNounPhrase((CDRReleaseNoteType)i).length, 0u);
+        XCTAssertTrue([CDRReleaseNoteTypeCountPhrase((CDRReleaseNoteType)i, 1) hasPrefix:@"1 "]);
+    }
+}
+
 #pragma mark - Plain-text rule
 
 - (void)testTextIsTrimmedAndWhitespaceCollapsed {

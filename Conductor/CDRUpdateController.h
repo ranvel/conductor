@@ -37,6 +37,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// One row per visible registration, rebuilt on every state change.
 @property (nonatomic, readonly, copy) NSArray<CDRAppRowModel *> *rowModels;
+/// When a manifest was last fetched successfully for any app (nil before the
+/// first check this launch). Feeds the window's "Checked 4 min ago".
+@property (nonatomic, readonly, nullable) NSDate *lastCheckDate;
 @property (nonatomic, copy, nullable) void (^onRowModelsChanged)(void);
 
 /// Aggregate operation progress for a single UI bar: fired on phase

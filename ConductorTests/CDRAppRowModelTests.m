@@ -309,4 +309,145 @@ static CDRManifest *ManifestWithVersion(NSString *version, NSString *urgencyToke
     }
 }
 
+#pragma mark - Main window fields (CND-3)
+
+static CDRManifest *ManifestWithNotes(NSString *version, NSArray<NSArray<NSString *> *> *notes,
+                                      NSArray<NSDictionary *> *history) {
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSArray<NSString *> *pair in notes) [items addObject:@{@"type": pair[0], @"text": pair[1]}];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{
+        @"conductor_manifest": @1,
+        @"bundle_id": kBundleID,
+        @"version": version,
+        @"url": @"https://example.com/app.dmg",
+        @"released": @"2026-11-03",
+        @"size": @19293798,
+        @"changelog_url": @"https://example.com/changelog",
+        @"notes": items,
+        @"history": history ?: @[],
+    } options:0 error:NULL];
+    return [CDRManifest manifestWithData:data error:NULL];
+}
+
+- (void)testAvailableRowCarriesNotesDotsAndIncludedVersions {
+    CDRManifest *m = ManifestWithNotes(@"1.4", @[@[@"fixed", @"f"], @[@"removed", @"r"], @[@"mystery", @"?"]], @[
+        @{@"version": @"1.3", @"date": @"2026-10-14", @"notes": @[@{@"type": @"added", @"text": @"a"}]},
+        @{@"version": @"1.2", @"notes": @[@{@"type": @"notice", @"text": @"already installed"}]},
+    ]);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.2" manifest:m state:nil
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.2" decision:d manifest:m];
+
+    XCTAssertEqual(row.section, CDRAppRowSectionUpdates);
+    XCTAssertEqualObjects(row.advertisedVersion, @"1.4");
+    XCTAssertEqualObjects(row.versionPairDisplay, @"1.2 → 1.4");
+    // Dots: the advertised release's types only — not the skipped version's.
+    XCTAssertEqual(row.noteTypes, CDRReleaseNoteTypeSetRemoved | CDRReleaseNoteTypeSetFixed);
+    XCTAssertEqualObjects([row.releases valueForKey:@"version"], (@[@"1.4", @"1.3"]));
+    XCTAssertEqualObjects(row.includedVersions, (@[@"1.3"]));
+    XCTAssertEqual(row.releases.firstObject.undisplayableNoteCount, 1u);
+    XCTAssertNotNil(row.releaseDate);
+    XCTAssertEqualObjects(row.artifactSize, @19293798);
+    XCTAssertEqualObjects(row.changelogURL.absoluteString, @"https://example.com/changelog");
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Update available");
+    XCTAssertEqual(row.stateTone, CDRAppRowTonePrimary);
+}
+
+- (void)testDeferredRowKeepsItsDotsAndSitsUnderUpdates {
+    CDRManifest *m = ManifestWithNotes(@"1.1", @[@[@"fixed", @"f"]], nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil
+                                            soak:CDRSoakDurationOneWeek breakThrough:NO];
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+    XCTAssertEqual(row.state, CDRAppRowStateDeferred);
+    XCTAssertEqual(row.section, CDRAppRowSectionUpdates);
+    XCTAssertEqual(row.noteTypes, CDRReleaseNoteTypeSetFixed);
+    XCTAssertEqualObjects(row.deferredUntil, d.deferredUntil);
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Deferred · 7 days left");
+    XCTAssertEqual(row.stateTone, CDRAppRowToneSecondary);
+}
+
+- (void)testRetractedPendingRowNeedsYouWithAHollowDotAndGotIt {
+    CDRAppUpdateState *state = [[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now]
+        stateByNotingNotifiedVersion:@"1.1" build:nil at:self.now];
+    CDRManifest *m = ManifestWithNotes(@"1.0", @[@[@"fixed", @"notes of the build already installed"]], nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:state
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+
+    XCTAssertEqual(row.state, CDRAppRowStateRetracted);
+    XCTAssertEqual(row.section, CDRAppRowSectionNeedsYou);
+    XCTAssertEqualObjects(row.retractedVersion, @"1.1");
+    // The only dot is Conductor's own Retracted ring; the manifest's notes
+    // describe a build that isn't an update and are not shown.
+    XCTAssertEqual(row.noteTypes, CDRReleaseNoteTypeSetRetracted);
+    XCTAssertEqual(row.releases.count, 0u);
+    XCTAssertNil(row.advertisedVersion);
+    XCTAssertEqualObjects(row.versionPairDisplay, @"1.0");
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"1.1 was retracted");
+    XCTAssertEqual(row.stateTone, CDRAppRowToneAttention);
+    XCTAssertTrue(row.actions & CDRAppRowActionAcknowledge);
+}
+
+- (void)testUpToDateRowShowsNoUpdateDataEvenIfTheManifestHasNotes {
+    CDRManifest *m = ManifestWithNotes(@"1.0", @[@[@"added", @"what 1.0 added"]], nil);
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:m state:nil
+                                            soak:CDRSoakDurationOff breakThrough:NO];
+    CDRAppRowModel *row = [self modelWithInstalled:@"1.0" decision:d manifest:m];
+    XCTAssertEqual(row.state, CDRAppRowStateUpToDate);
+    XCTAssertEqual(row.section, CDRAppRowSectionUpToDate);
+    XCTAssertEqual(row.noteTypes, CDRReleaseNoteTypeSetNone);
+    XCTAssertEqual(row.releases.count, 0u);
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"Up to date");
+}
+
+- (void)testWorkingAndParkedRowsKeepTheUpdateTheyAreInstalling {
+    CDRManifest *m = ManifestWithNotes(@"1.1", @[@[@"improved", @"i"]], nil);
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:@"1.0"];
+    CDRAppRowModel *working = [CDRAppRowModel modelForRegistration:reg lastDecision:nil decidedManifest:m
+                                                         lastError:nil ignored:NO
+                                                    operationPhase:CDRUpdatePhaseDownloading parked:NO];
+    XCTAssertEqual(working.section, CDRAppRowSectionUpdates);
+    XCTAssertEqualObjects(working.versionPairDisplay, @"1.0 → 1.1");
+    XCTAssertEqual(working.noteTypes, CDRReleaseNoteTypeSetImproved);
+    XCTAssertEqualObjects([working shortStateLineAsOf:self.now], @"Downloading…");
+
+    CDRAppRowModel *parked = [CDRAppRowModel modelForRegistration:reg lastDecision:nil decidedManifest:m
+                                                        lastError:nil ignored:NO
+                                                   operationPhase:CDRUpdatePhaseAwaitingQuit parked:YES];
+    XCTAssertEqual(parked.section, CDRAppRowSectionUpdates);
+    XCTAssertEqualObjects(parked.advertisedVersion, @"1.1");
+}
+
+- (void)testUncheckedFailedAndIgnoredRowsAreNeverFiledAsUpToDate {
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:@"1.0"];
+    CDRAppRowModel *unknown = [CDRAppRowModel modelForRegistration:reg lastDecision:nil decidedManifest:nil
+                                                         lastError:nil ignored:NO
+                                                    operationPhase:CDRUpdatePhaseIdle parked:NO];
+    NSError *error = CDRError(CDRErrorManifestUnreachable, kBundleID, nil, nil);
+    CDRAppRowModel *failed = [CDRAppRowModel modelForRegistration:reg lastDecision:nil decidedManifest:nil
+                                                        lastError:error ignored:NO
+                                                   operationPhase:CDRUpdatePhaseIdle parked:NO];
+    CDRAppRowModel *ignored = [CDRAppRowModel modelForRegistration:reg lastDecision:nil decidedManifest:nil
+                                                         lastError:nil ignored:YES
+                                                    operationPhase:CDRUpdatePhaseIdle parked:NO];
+    for (CDRAppRowModel *row in @[unknown, failed, ignored]) {
+        XCTAssertEqual(row.section, CDRAppRowSectionNotChecked);
+        XCTAssertNotEqualObjects([row shortStateLineAsOf:self.now], @"Up to date");
+    }
+    XCTAssertEqualObjects(failed.errorDescription, error.localizedDescription);
+}
+
+- (void)testContextSuppliesTheDeveloperName {
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:@"1.0"];
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+    context.developerName = @"Cedar Syntax LLC";
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:reg lastDecision:nil decidedManifest:nil
+                                                     lastError:nil ignored:NO
+                                                operationPhase:CDRUpdatePhaseIdle parked:NO context:context];
+    XCTAssertEqualObjects(row.developerName, @"Cedar Syntax LLC");
+    XCTAssertEqualObjects(row.appURL, reg.appURL);
+    XCTAssertEqualObjects(row.installedVersion, @"1.0");
+}
+
 @end

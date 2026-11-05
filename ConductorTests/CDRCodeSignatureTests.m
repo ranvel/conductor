@@ -5,6 +5,7 @@
 
 #import <XCTest/XCTest.h>
 #import "CDRCodeSignature.h"
+#import "CDRBundleInspector.h"
 #import "CDRErrors.h"
 
 /// These run against the test HOST bundle (Conductor.app itself) — a real,
@@ -83,6 +84,32 @@
     XCTAssertNil(team);
     XCTAssertEqual(error.code, CDRErrorInstalledAdHoc);
     [[NSFileManager defaultManager] removeItemAtURL:tmp error:NULL];
+}
+
+#pragma mark - CDRBundleInspector (display only)
+
+- (void)testDeveloperNameOfHostBundleIsTheSigningOrganization {
+    NSString *name = [CDRBundleInspector developerNameForBundleAtURL:[self hostBundleURL]];
+    XCTAssertGreaterThan(name.length, 0u);
+    // The organization alone — not the certificate's whole common name.
+    XCTAssertFalse([name containsString:@"Developer ID"]);
+    XCTAssertFalse([name containsString:@"F252L9GUBW"]);
+}
+
+- (void)testDeveloperNameIsNilForAnAdHocSignedBinary {
+    NSURL *copy = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+        URLByAppendingPathComponent:[NSString stringWithFormat:@"cdr-inspector-%@", NSUUID.UUID.UUIDString]];
+    XCTAssertTrue([[NSFileManager defaultManager] copyItemAtURL:[NSURL fileURLWithPath:@"/bin/echo"]
+                                                          toURL:copy error:NULL]);
+    NSTask *sign = [[NSTask alloc] init];
+    sign.executableURL = [NSURL fileURLWithPath:@"/usr/bin/codesign"];
+    sign.arguments = @[@"--force", @"--sign", @"-", copy.path];
+    sign.standardError = [NSPipe pipe];
+    [sign launchAndReturnError:NULL];
+    [sign waitUntilExit];
+    XCTAssertNil([CDRBundleInspector developerNameForBundleAtURL:copy]);
+    XCTAssertNil([CDRBundleInspector developerNameForBundleAtURL:[NSURL fileURLWithPath:@"/nonexistent.app"]]);
+    [[NSFileManager defaultManager] removeItemAtURL:copy error:NULL];
 }
 
 @end
