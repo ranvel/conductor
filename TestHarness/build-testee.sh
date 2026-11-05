@@ -1,15 +1,26 @@
 #!/bin/zsh
 #
-# build-testee.sh — builds, signs, and packages ConductorTestee v1.0 and v1.1
-# for Conductor's end-to-end dev-mode harness (see docs/replace-flow.md and
+# build-testee.sh — builds, signs, and packages ConductorTestee for
+# Conductor's end-to-end dev-mode harness (see docs/replace-flow.md and
 # docs/dev-mode.md).
+#
+# Builds (all Developer ID signed, hardened runtime):
+#   1.0  sandboxed, no network entitlement   — the starting install
+#   1.1  sandboxed, no network entitlement   — the ordinary update
+#   1.2  sandboxed + network.client, ships an Internet Access Policy
+#   1.3  sandboxed + network.client, ships no policy
+#   0.9  NOT sandboxed                       — a starting install whose
+#        update to 1.1 *drops* network access (never asked about)
 #
 # Output (in TestHarness/serve/):
 #   ConductorTestee-1.0.app/   — install this into a target dir to start
+#   ConductorTestee-0.9.app/   — the unsandboxed starting install
 #   ConductorTestee-1.1.dmg    — the update artifact Conductor downloads
 #   ConductorTestee-1.1.zip    — same payload as zip (zip-path testing)
+#   ConductorTestee-1.2.dmg, ConductorTestee-1.3.dmg — the network-gate updates
 #   manifest.json              — the Conductor manifest advertising 1.1, with
 #                                typed release notes + history (spec.md §3.5)
+#   manifest-1.2.json, manifest-1.3.json — advertise the network-gate updates
 #
 # Usage:
 #   ./build-testee.sh [--notarize] [--port 8000]
@@ -42,8 +53,77 @@ SERVE=serve
 rm -rf "$BUILD" "$SERVE"
 mkdir -p "$BUILD" "$SERVE"
 
-build_app() { # $1=short version  $2=build number  $3=output dir
-	local version="$1" buildnum="$2" outdir="$3"
+# Entitlements for the three postures the network gate (CND-7) tells apart.
+# "none" signs with no entitlements at all: not sandboxed.
+write_entitlements() { # $1=kind (sandbox | sandbox-client)  $2=output file
+	local client=""
+	[[ "$1" == "sandbox-client" ]] && client=$'\t<key>com.apple.security.network.client</key><true/>\n'
+	cat > "$2" <<-PLIST
+	<?xml version="1.0" encoding="UTF-8"?>
+	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+	<plist version="1.0">
+	<dict>
+		<key>com.apple.security.app-sandbox</key><true/>
+	${client}</dict>
+	</plist>
+	PLIST
+}
+
+# The Internet Access Policy the 1.2 build ships (Objective Development's
+# format, the file Little Snitch reads). One literal purpose and one that is
+# a key into the .strings table, the two styles real apps use; a connection
+# with no host (must be dropped) and a Services entry (read, not shown).
+write_policy() { # $1=app bundle
+	cat > "$1/Contents/Resources/InternetAccessPolicy.plist" <<-PLIST
+	<?xml version="1.0" encoding="UTF-8"?>
+	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+	<plist version="1.0">
+	<dict>
+		<key>ApplicationDescription</key><string>IAP_APP_DESC</string>
+		<key>DeveloperName</key><string>Cedar Syntax LLC</string>
+		<key>Connections</key>
+		<array>
+			<dict>
+				<key>IsIncoming</key><false/>
+				<key>Host</key><string>*</string>
+				<key>NetworkProtocol</key><string>TCP</string>
+				<key>Port</key><string>80, 443</string>
+				<key>Purpose</key><string>Checks the feeds you add for new episodes and downloads them.</string>
+				<key>DenyConsequences</key><string>Feeds stop refreshing.</string>
+			</dict>
+			<dict>
+				<key>IsIncoming</key><false/>
+				<key>Host</key><string>search.example.com</string>
+				<key>NetworkProtocol</key><string>TCP</string>
+				<key>Port</key><string>443</string>
+				<key>Relevance</key><string>Default</string>
+				<key>Purpose</key><string>IAP_SEARCH_PURPOSE</string>
+				<key>DenyConsequences</key><string>IAP_SEARCH_DENY</string>
+			</dict>
+			<dict>
+				<key>Purpose</key><string>An entry that names no host.</string>
+			</dict>
+		</array>
+		<key>Services</key>
+		<array>
+			<dict>
+				<key>Identifier</key><string>com.apple.MapKit</string>
+				<key>Purpose</key><string>Not shown by Conductor in this version.</string>
+			</dict>
+		</array>
+	</dict>
+	</plist>
+	PLIST
+	mkdir -p "$1/Contents/Resources/en.lproj"
+	cat > "$1/Contents/Resources/en.lproj/InternetAccessPolicy.strings" <<-STRINGS
+	"IAP_APP_DESC" = "A test app for Conductor's network gate.";
+	"IAP_SEARCH_PURPOSE" = "Podcast directory search, only when you type in Search.";
+	"IAP_SEARCH_DENY" = "Search returns nothing.";
+	STRINGS
+}
+
+build_app() { # $1=short version  $2=build number  $3=output dir  $4=posture (sandbox | sandbox-client | none)  $5="policy" to ship one
+	local version="$1" buildnum="$2" outdir="$3" posture="${4:-sandbox}" policy="${5:-}"
 	local app="$outdir/ConductorTestee.app"
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
@@ -75,19 +155,34 @@ build_app() { # $1=short version  $2=build number  $3=output dir
 	}
 	JSON
 
+	# The policy goes in BEFORE signing too: it is read from under the seal.
+	[[ "$policy" == "policy" ]] && write_policy "$app"
+
 	clang -fobjc-arc -mmacosx-version-min=13.0 -framework Cocoa \
 		-o "$app/Contents/MacOS/ConductorTestee" testee-main.m
 
-	codesign --force --options runtime --timestamp \
-		--sign "$IDENTITY" "$app"
-	echo "built + signed ConductorTestee ${version} (${buildnum})"
+	if [[ "$posture" == "none" ]]; then
+		codesign --force --options runtime --timestamp \
+			--sign "$IDENTITY" "$app"
+	else
+		# Kept beside the version folders, not inside one: each of those is
+		# packed whole into a DMG that must hold exactly one .app.
+		write_entitlements "$posture" "$BUILD/entitlements-$posture.plist"
+		codesign --force --options runtime --timestamp \
+			--entitlements "$BUILD/entitlements-$posture.plist" \
+			--sign "$IDENTITY" "$app"
+	fi
+	echo "built + signed ConductorTestee ${version} (${buildnum}) — ${posture}${policy:+, with policy}"
 }
 
-build_app 1.0 100 "$BUILD/v1.0"
-build_app 1.1 110 "$BUILD/v1.1"
+build_app 1.0 100 "$BUILD/v1.0" sandbox
+build_app 1.1 110 "$BUILD/v1.1" sandbox
+build_app 1.2 120 "$BUILD/v1.2" sandbox-client policy
+build_app 1.3 130 "$BUILD/v1.3" sandbox-client
+build_app 0.9 90  "$BUILD/v0.9" none
 
 if [[ "$NOTARIZE" == 1 ]]; then
-	for v in v1.0 v1.1; do
+	for v in v1.0 v1.1 v1.2 v1.3 v0.9; do
 		zip="$BUILD/$v/ConductorTestee.zip"
 		ditto -ck --keepParent "$BUILD/$v/ConductorTestee.app" "$zip"
 		echo "notarizing $v …"
@@ -101,11 +196,19 @@ fi
 # completed install (State B) without requiring notarized artifacts.
 ditto "$BUILD/v1.0/ConductorTestee.app" "$SERVE/ConductorTestee-1.0.app"
 ditto "$BUILD/v1.1/ConductorTestee.app" "$SERVE/ConductorTestee-1.1.app"
+# v0.9: the unsandboxed starting install for the "drops network access" path.
+ditto "$BUILD/v0.9/ConductorTestee.app" "$SERVE/ConductorTestee-0.9.app"
 
 # v1.1: the update artifact, DMG (primary) and zip (alternate path).
 hdiutil create -srcfolder "$BUILD/v1.1" -volname "ConductorTestee" \
 	-fs APFS -format UDZO -quiet "$SERVE/ConductorTestee-1.1.dmg"
 ditto -ck --keepParent "$BUILD/v1.1/ConductorTestee.app" "$SERVE/ConductorTestee-1.1.zip"
+
+# Network-gate artifacts (CND-7): the two builds that gain internet access.
+for v in 1.2 1.3; do
+	hdiutil create -srcfolder "$BUILD/v$v" -volname "ConductorTestee" \
+		-fs APFS -format UDZO -quiet "$SERVE/ConductorTestee-$v.dmg"
+done
 
 # Replay-attack artifact: v1.0 packaged as if it were an update. A manifest
 # pointing here simulates a hijacked URL serving an older validly-signed build;
@@ -165,6 +268,23 @@ cat > "$SERVE/manifest.json" <<-JSON
   ]
 }
 JSON
+
+# Network-gate manifests: 1.2 gains access and says why, 1.3 gains it and
+# doesn't. No notes — these are about the gate.
+for pair in "1.2 120" "1.3 130"; do
+	v="${pair% *}"; b="${pair#* }"
+	cat > "$SERVE/manifest-$v.json" <<-JSON
+	{
+	  "conductor_manifest": 1,
+	  "bundle_id": "com.ranvel.conductor-testee",
+	  "version": "$v",
+	  "build": "$b",
+	  "url": "http://localhost:${PORT}/ConductorTestee-$v.dmg",
+	  "sha256": "$(shasum -a 256 "$SERVE/ConductorTestee-$v.dmg" | cut -d' ' -f1)",
+	  "changelog_url": "http://localhost:${PORT}/"
+	}
+	JSON
+done
 
 # Negative-test manifests.
 sed -e 's/^  "version": "1.1"/  "version": "0.9"/' -e 's/"build": "110"/"build": "90"/' \

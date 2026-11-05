@@ -16,6 +16,8 @@
 #import "CDRUpdatePolicy.h"
 #import "CDRUpdatePreferences.h"
 #import "CDRRetractionNotices.h"
+#import "CDRNetworkInspection.h"
+#import "CDRInternetAccessPolicy.h"
 #import "CDRErrors.h"
 
 static NSString * const kBundleID = @"com.example.app";
@@ -605,6 +607,190 @@ static CDRManifest *ManifestWithNotes(NSString *version, NSArray<NSArray<NSStrin
         XCTAssertNil(CDRRetractionNoticeForBundleID(kBundleID, defaults));
     }
     [defaults removePersistentDomainForName:suite];
+}
+
+#pragma mark - NETWORK row (CND-7)
+
+static NSDictionary *Ents(BOOL sandbox, BOOL client) {
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+    if (sandbox) dict[CDREntitlementAppSandbox] = @YES;
+    if (client) dict[CDREntitlementNetworkClient] = @YES;
+    return dict;
+}
+
+static CDRInternetAccessPolicy *OneRowPolicy(void) {
+    return [CDRInternetAccessPolicy policyWithPropertyList:@{
+        @"Connections": @[@{@"Host": @"search.example.com", @"Purpose": @"Directory search.", @"Port": @"443",
+                            @"NetworkProtocol": @"TCP"}],
+    } strings:nil];
+}
+
+- (CDRAppRowModel *)upToDateRowWithContext:(CDRAppRowContext *)context installed:(NSString *)installed {
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:installed];
+    CDRManifest *m = ManifestWithVersion(installed, nil);
+    CDRUpdateDecision *d = [CDRUpdatePolicy decisionForRegistration:reg manifest:m state:nil
+                                                        preferences:PrefsWithSoak(CDRSoakDurationOff)
+                                                       breakThrough:NO now:self.now];
+    return [CDRAppRowModel modelForRegistration:reg lastDecision:d decidedManifest:m lastError:nil ignored:NO
+                                 operationPhase:CDRUpdatePhaseIdle parked:NO context:context];
+}
+
+- (void)testNetworkRowForTheThreeInstalledStates {
+    // Before anything was read: says so.
+    CDRAppRowModel *unread = [self upToDateRowWithContext:nil installed:@"1.0"];
+    XCTAssertEqualObjects(unread.networkTitle, @"Unknown");
+    XCTAssertEqualObjects(unread.networkDetail, @"Conductor hasn't inspected this app's network access.");
+
+    // Sandboxed, no network entitlement.
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+    context.installedNetworkKnown = YES;
+    context.installedPosture = CDRNetworkPostureNone;
+    CDRAppRowModel *none = [self upToDateRowWithContext:context installed:@"1.0"];
+    XCTAssertEqualObjects(none.networkTitle, @"No network access");
+    XCTAssertEqual(none.networkTone, CDRNetworkRowTonePositive);
+    XCTAssertEqual(none.networkPolicyRows.count, 0u);
+    XCTAssertNil(none.networkTrailing, @"nothing was verified, so nothing is claimed");
+
+    // Has access, with a policy: expandable to its rows.
+    context.installedPosture = CDRNetworkPostureClient;
+    context.installedPolicy = OneRowPolicy();
+    CDRAppRowModel *withPolicy = [self upToDateRowWithContext:context installed:@"1.0"];
+    XCTAssertEqualObjects(withPolicy.networkTitle, @"Has network access");
+    XCTAssertEqualObjects(withPolicy.networkDetail, @"Outgoing connections · ships an Internet Access Policy");
+    XCTAssertEqual(withPolicy.networkTone, CDRNetworkRowToneNeutral);
+    XCTAssertEqualObjects([withPolicy.networkPolicyRows valueForKey:@"subject"], (@[@"search.example.com"]));
+
+    // Has access, no policy.
+    context.installedPolicy = nil;
+    CDRAppRowModel *noPolicy = [self upToDateRowWithContext:context installed:@"1.0"];
+    XCTAssertEqualObjects(noPolicy.networkDetail, @"Outgoing connections · no Internet Access Policy");
+    XCTAssertEqual(noPolicy.networkPolicyRows.count, 0u);
+
+    // A non-sandboxed app counts as having access.
+    context.installedPosture = CDRNetworkPostureUnrestricted;
+    CDRAppRowModel *unsandboxed = [self upToDateRowWithContext:context installed:@"1.0"];
+    XCTAssertEqualObjects(unsandboxed.networkTitle, @"Has network access");
+    XCTAssertEqualObjects(unsandboxed.networkDetail, @"Not sandboxed · no Internet Access Policy");
+
+    // Entitlements that couldn't be read are never reported as "no access".
+    context.installedPosture = CDRNetworkPostureUnknown;
+    XCTAssertEqualObjects([self upToDateRowWithContext:context installed:@"1.0"].networkTitle, @"Unknown");
+}
+
+- (void)testNetworkRowOnceANewBuildHasBeenInspected {
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+    context.installedNetworkKnown = YES;
+    context.installedPosture = CDRNetworkPostureNone;
+
+    // The Main window design's own line.
+    context.inspection = [[CDRNetworkInspection alloc] initWithInstalledVersion:@"1.2" stagedVersion:@"1.4"
+        installedEntitlements:Ents(YES, NO) stagedEntitlements:Ents(YES, NO) stagedPolicy:nil teamID:@"F252L9GUBW"];
+    CDRAppRowModel *same = [self upToDateRowWithContext:context installed:@"1.2"];
+    XCTAssertEqualObjects(same.networkTitle, @"No network access");
+    XCTAssertEqualObjects(same.networkDetail, @"Same as 1.2 · this build makes no connections");
+    XCTAssertEqualObjects(same.networkTrailing, @"Team ID matches");
+    XCTAssertEqual(same.networkTone, CDRNetworkRowTonePositive);
+
+    // Gains access, with and without a policy.
+    context.inspection = [[CDRNetworkInspection alloc] initWithInstalledVersion:@"0.4" stagedVersion:@"0.5"
+        installedEntitlements:Ents(YES, NO) stagedEntitlements:Ents(YES, YES) stagedPolicy:OneRowPolicy() teamID:nil];
+    CDRAppRowModel *gained = [self upToDateRowWithContext:context installed:@"0.4"];
+    XCTAssertEqualObjects(gained.networkTitle, @"Gains internet access");
+    XCTAssertEqual(gained.networkTone, CDRNetworkRowToneAttention);
+    XCTAssertEqualObjects(gained.networkDetail, @"0.4 made no connections · 0.5 says where it connects, and why");
+    // The row expands to the NEW build's policy, the one being approved.
+    XCTAssertEqual(gained.networkPolicyRows.count, 1u);
+
+    context.inspection = [[CDRNetworkInspection alloc] initWithInstalledVersion:@"0.8" stagedVersion:@"0.9"
+        installedEntitlements:Ents(YES, NO) stagedEntitlements:Ents(YES, YES) stagedPolicy:nil teamID:nil];
+    XCTAssertEqualObjects([self upToDateRowWithContext:context installed:@"0.8"].networkDetail,
+                          @"0.8 made no connections · 0.9 doesn’t say why it needs to");
+
+    // Drops access: celebrated.
+    context.installedPosture = CDRNetworkPostureUnrestricted;
+    context.inspection = [[CDRNetworkInspection alloc] initWithInstalledVersion:@"0.9" stagedVersion:@"1.1"
+        installedEntitlements:@{} stagedEntitlements:Ents(YES, NO) stagedPolicy:nil teamID:nil];
+    CDRAppRowModel *lost = [self upToDateRowWithContext:context installed:@"0.9"];
+    XCTAssertEqualObjects(lost.networkTitle, @"Drops network access");
+    XCTAssertEqual(lost.networkTone, CDRNetworkRowTonePositive);
+    XCTAssertEqualObjects(lost.networkDetail, @"0.9 could connect · 1.1 makes no connections");
+}
+
+- (void)testDeveloperSchemeAddsRawEntitlementsAndTeamID {
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+    context.installedNetworkKnown = YES;
+    context.installedPosture = CDRNetworkPostureNone;
+    context.installedEntitlementKeys = @[CDREntitlementAppSandbox];
+    context.teamID = @"F252L9GUBW";
+    context.inspection = [[CDRNetworkInspection alloc] initWithInstalledVersion:@"0.4" stagedVersion:@"0.5"
+        installedEntitlements:Ents(YES, NO) stagedEntitlements:Ents(YES, YES) stagedPolicy:nil teamID:@"F252L9GUBW"];
+
+    // Not under the other schemes.
+    context.preferences = [CDRUpdatePreferences defaultPreferences];
+    XCTAssertEqual([self upToDateRowWithContext:context installed:@"0.4"].networkDeveloperLines.count, 0u);
+
+    CDRMutableUpdatePreferences *developer = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    developer.interestScheme = CDRInterestSchemeDeveloper;
+    context.preferences = [developer copy];
+    XCTAssertEqualObjects([self upToDateRowWithContext:context installed:@"0.4"].networkDeveloperLines,
+                          (@[@"Team ID F252L9GUBW", @"installed: app-sandbox",
+                             @"+ com.apple.security.network.client"]));
+}
+
+- (void)testInspectingApprovalAndSkippedRows {
+    CDRManifest *m = ManifestWithNotes(@"0.5", @[@[@"added", @"a"]], nil);
+    CDRAppRegistration *reg = [self registrationWithInstalledVersion:@"0.4"];
+    CDRUpdateDecision *available = [CDRUpdatePolicy decisionForRegistration:reg manifest:m state:nil
+                                                                preferences:PrefsWithSoak(CDRSoakDurationOff)
+                                                               breakThrough:NO now:self.now];
+    CDRAppRowContext *context = [[CDRAppRowContext alloc] init];
+
+    // Conductor looking ahead on its own: Inspecting, nothing to press.
+    context.inspecting = YES;
+    CDRAppRowModel *inspecting = [CDRAppRowModel modelForRegistration:reg lastDecision:available decidedManifest:m
+                                                            lastError:nil ignored:NO
+                                                       operationPhase:CDRUpdatePhaseDownloading parked:NO context:context];
+    XCTAssertEqual(inspecting.state, CDRAppRowStateInspecting);
+    XCTAssertEqual(inspecting.section, CDRAppRowSectionUpdates);
+    XCTAssertEqual(inspecting.actions, CDRAppRowActionNone);
+    XCTAssertEqualObjects([inspecting shortStateLineAsOf:self.now], @"Inspecting…");
+    XCTAssertEqualObjects(inspecting.versionPairDisplay, @"0.4 → 0.5");
+
+    // Parked, and the gate says to ask: NEEDS YOU.
+    context.inspecting = NO;
+    context.approvalParked = YES;
+    context.networkApprovalNeeded = YES;
+    CDRAppRowModel *approval = [CDRAppRowModel modelForRegistration:reg lastDecision:available decidedManifest:m
+                                                          lastError:nil ignored:NO
+                                                     operationPhase:CDRUpdatePhaseInspecting parked:NO context:context];
+    XCTAssertEqual(approval.state, CDRAppRowStateNeedsNetworkApproval);
+    XCTAssertEqual(approval.section, CDRAppRowSectionNeedsYou);
+    XCTAssertTrue(approval.actions & CDRAppRowActionInstall);
+    XCTAssertEqualObjects([approval shortStateLineAsOf:self.now], @"Approve network access");
+    XCTAssertTrue(approval.contributesToBadge);
+
+    // Parked, nothing to ask: an ordinary available update, already fetched.
+    context.networkApprovalNeeded = NO;
+    CDRAppRowModel *ready = [CDRAppRowModel modelForRegistration:reg lastDecision:available decidedManifest:m
+                                                       lastError:nil ignored:NO
+                                                  operationPhase:CDRUpdatePhaseInspecting parked:NO context:context];
+    XCTAssertEqual(ready.state, CDRAppRowStateAvailable);
+    XCTAssertTrue(ready.actions & CDRAppRowActionInstall);
+
+    // Skipped.
+    CDRAppUpdateState *skipped = [available.stateAfterCheck stateBySkippingVersion:@"0.5" at:self.now];
+    CDRUpdateDecision *skip = [CDRUpdatePolicy decisionForRegistration:reg manifest:m state:skipped
+                                                           preferences:PrefsWithSoak(CDRSoakDurationOff)
+                                                          breakThrough:NO now:self.now];
+    CDRAppRowModel *row = [CDRAppRowModel modelForRegistration:reg lastDecision:skip decidedManifest:m
+                                                     lastError:nil ignored:NO
+                                                operationPhase:CDRUpdatePhaseIdle parked:NO];
+    XCTAssertEqual(row.state, CDRAppRowStateSkipped);
+    XCTAssertEqual(row.section, CDRAppRowSectionUpdates, @"never filed as up to date");
+    XCTAssertEqualObjects([row shortStateLineAsOf:self.now], @"0.5 skipped");
+    XCTAssertFalse(row.actions & CDRAppRowActionInstall);
+    XCTAssertTrue(row.actions & CDRAppRowActionCheckNow);
+    XCTAssertFalse(row.contributesToBadge);
 }
 
 @end

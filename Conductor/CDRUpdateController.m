@@ -19,6 +19,8 @@
 #import "CDRErrors.h"
 #import "CDRIgnoreList.h"
 #import "CDRRetractionNotices.h"
+#import "CDRNetworkInspection.h"
+#import "CDRInternetAccessPolicy.h"
 #import "CDRSharedLog.h"
 
 BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
@@ -36,6 +38,18 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             return NO;
     }
 }
+
+/// What the installed copy of an app may do on the network, read once per
+/// (path, version) — display and consent data only.
+@interface CDRInstalledNetworkInfo : NSObject
+@property (nonatomic) CDRNetworkPosture posture;
+@property (nonatomic, nullable) CDRInternetAccessPolicy *policy;
+@property (nonatomic, copy) NSArray<NSString *> *entitlementKeys;
+@property (nonatomic, copy, nullable) NSString *teamID;
+@end
+
+@implementation CDRInstalledNetworkInfo
+@end
 
 @interface CDRUpdateController () <CDRUpdateOperationDelegate>
 @property (nonatomic) CDRDevModeSession *session;
@@ -74,6 +88,24 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 /// only). NSNull marks "looked, found nothing" so unsigned apps aren't re-read.
 @property (nonatomic) NSMutableDictionary<NSString *, id> *developerNames;
 @property (nonatomic, readwrite, nullable) NSDate *lastCheckDate;
+
+// Network gate (CND-7)
+/// "path|version" → what the installed build may do on the network.
+@property (nonatomic) NSMutableDictionary<NSString *, CDRInstalledNetworkInfo *> *installedNetwork;
+/// Operations Conductor started on its own, to inspect a new build before
+/// the user is asked anything. They never get past the approval park
+/// without a click, and their failures are quiet.
+@property (nonatomic) NSMutableSet<NSString *> *inspectingBundleIDs;
+/// Inspect-ahead operations whose update was superseded or withdrawn while
+/// they ran: declined the moment they reach the approval step.
+@property (nonatomic) NSMutableSet<NSString *> *supersededBundleIDs;
+/// bundleID → the parked operation's reply block, while it waits for approval.
+@property (nonatomic) NSMutableDictionary<NSString *, void (^)(BOOL)> *pendingApprovals;
+/// bundleID → what the parked (or running) operation learned.
+@property (nonatomic) NSMutableDictionary<NSString *, CDRNetworkInspection *> *inspections;
+/// bundleID → the version whose inspect-ahead failed, so it isn't retried
+/// on every check.
+@property (nonatomic) NSMutableDictionary<NSString *, NSString *> *failedInspectionVersions;
 @end
 
 @implementation CDRUpdateController
@@ -103,6 +135,12 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     _reachedDownloadBundleIDs = [NSMutableSet set];
     _notifiedRecalledKeys = [NSMutableSet set];
     _developerNames = [NSMutableDictionary dictionary];
+    _installedNetwork = [NSMutableDictionary dictionary];
+    _inspectingBundleIDs = [NSMutableSet set];
+    _supersededBundleIDs = [NSMutableSet set];
+    _pendingApprovals = [NSMutableDictionary dictionary];
+    _inspections = [NSMutableDictionary dictionary];
+    _failedInspectionVersions = [NSMutableDictionary dictionary];
     return self;
 }
 
@@ -282,6 +320,20 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     NSString *bundleID = reg.bundleID;
     NSString *appName = reg.appURL.lastPathComponent.stringByDeletingPathExtension;
 
+    // An inspect-ahead operation is only wanted while the same version is
+    // still plainly available. Anything else — a newer version, a retraction,
+    // a hold — and it is discarded: now if it is parked, or as soon as it
+    // reaches the approval step if it is still running.
+    CDRUpdateOperation *running = self.operations[bundleID];
+    if (running && [self.inspectingBundleIDs containsObject:bundleID]) {
+        BOOL stillWanted = decision.outcome == CDRUpdateOutcomeAvailable
+            && [running.manifestVersion isEqualToString:manifest.version];
+        if (!stillWanted) {
+            if (self.pendingApprovals[bundleID]) [self resolveApproval:NO forBundleID:bundleID];
+            else [self.supersededBundleIDs addObject:bundleID];
+        }
+    }
+
     // A retraction notice is about a version that was pulled with nothing
     // newer on offer. Once the developer advertises something newer again,
     // or the recalled build turns out to be installed, it is moot.
@@ -313,6 +365,14 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
                                                          version:manifest.version
                                                          urgency:decision.urgency];
             }
+            [self beginInspectionIfNeededForRegistration:reg manifest:manifest];
+            break;
+        }
+
+        case CDRUpdateOutcomeSkipped: {
+            [self.knownManifests removeObjectForKey:bundleID];
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@ was skipped at your request.",
+                               bundleID, manifest.version]];
             break;
         }
 
@@ -433,6 +493,15 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     CDRAppRegistration *reg = [self registrationForBundleID:bundleID];
     if (!reg) return;
     if (self.operations[bundleID]) {
+        if ([self.inspectingBundleIDs containsObject:bundleID]) {
+            // Conductor was already fetching this build to inspect it. The
+            // user wants it: from here on it is their install.
+            [self.inspectingBundleIDs removeObject:bundleID];
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: continuing the build already being inspected.", bundleID]];
+            if (self.pendingApprovals[bundleID]) [self continueParkedInstallForBundleID:bundleID];
+            [self rebuildRowModels];
+            return;
+        }
         [CDRSharedLog log:[NSString stringWithFormat:@"%@: an update is already in progress.", bundleID]];
         return;
     }
@@ -454,6 +523,158 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     [self rebuildRowModels];
 }
 
+#pragma mark - Network gate
+
+- (CDRInstalledNetworkInfo *)installedNetworkInfoForRegistration:(CDRAppRegistration *)reg {
+    NSString *key = [NSString stringWithFormat:@"%@|%@|%@", reg.appURL.path, reg.installedShortVersion,
+                     reg.installedBuildVersion ?: @"-"];
+    CDRInstalledNetworkInfo *info = self.installedNetwork[key];
+    if (info) return info;
+
+    info = [[CDRInstalledNetworkInfo alloc] init];
+    NSString *team = nil;
+    NSDictionary *entitlements = [CDRBundleInspector entitlementsForBundleAtURL:reg.appURL teamID:&team];
+    info.posture = entitlements ? CDRNetworkPostureFromEntitlements(entitlements) : CDRNetworkPostureUnknown;
+    info.teamID = team;
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    for (NSString *entitlement in @[CDREntitlementAppSandbox, CDREntitlementNetworkClient, CDREntitlementNetworkServer]) {
+        id value = entitlements[entitlement];
+        if ([value isKindOfClass:[NSNumber class]] && [value boolValue]) [keys addObject:entitlement];
+    }
+    info.entitlementKeys = keys;
+    // The installed copy's own policy, for the NETWORK row. Display only.
+    info.policy = [CDRInternetAccessPolicy policyForBundleAtURL:reg.appURL];
+    self.installedNetwork[key] = info;
+    return info;
+}
+
+/// Starts an operation whose only purpose (so far) is to learn what the new
+/// build may do on the network, so the row can say "Approve network access"
+/// before the user has clicked anything. It runs the ordinary pipeline —
+/// download, the whole of Verify, then Inspect — and parks there. It never
+/// reaches the quit check or the swap without a click.
+///
+/// Only when it can matter: the gate is on, and the installed build provably
+/// (or possibly) has no network access. A build that already has access
+/// can't "gain" it, so nothing is downloaded ahead of time for those.
+- (void)beginInspectionIfNeededForRegistration:(CDRAppRegistration *)reg manifest:(CDRManifest *)manifest {
+    NSString *bundleID = reg.bundleID;
+    if (self.operations[bundleID]) return;
+    if ([self.failedInspectionVersions[bundleID] isEqualToString:manifest.version]) return;
+    CDRUpdatePreferences *preferences =
+        [CDRPolicyResolver effectivePreferencesForBundleID:bundleID defaults:self.defaults];
+    if (!preferences.requireNetworkApproval) return;
+    if (CDRNetworkPostureHasAccess([self installedNetworkInfoForRegistration:reg].posture)) return;
+
+    [CDRSharedLog log:[NSString stringWithFormat:@"%@: downloading %@ to inspect its network access before you’re asked to install it.",
+                       bundleID, manifest.version]];
+    [self.inspectingBundleIDs addObject:bundleID];
+    [self.supersededBundleIDs removeObject:bundleID];
+    CDRUpdateOperation *op = [[CDRUpdateOperation alloc] initWithRegistration:reg
+                                                                     manifest:manifest
+                                                                      session:self.session
+                                                                     delegate:self];
+    self.operations[bundleID] = op;
+    self.operationPhases[bundleID] = @(CDRUpdatePhaseIdle);
+    [self.reachedDownloadBundleIDs removeObject:bundleID];
+    [op start];
+}
+
+- (CDRNetworkGateDecision)gateDecisionForBundleID:(NSString *)bundleID {
+    CDRNetworkInspection *inspection = self.inspections[bundleID];
+    if (!inspection) return CDRNetworkGateDecisionNoAsk;
+    return [CDRNetworkGate decisionForInspection:inspection
+                                     preferences:[CDRPolicyResolver effectivePreferencesForBundleID:bundleID
+                                                                                          defaults:self.defaults]];
+}
+
+/// Answers a parked operation. YES lets it go on to the quit check and the
+/// swap; NO discards its staging.
+- (void)resolveApproval:(BOOL)proceed forBundleID:(NSString *)bundleID {
+    void (^reply)(BOOL) = self.pendingApprovals[bundleID];
+    if (!reply) return;
+    [self.pendingApprovals removeObjectForKey:bundleID];
+    if (proceed) [self.inspectingBundleIDs removeObject:bundleID];   // it is the user's install now
+    reply(proceed);
+    [self rebuildRowModels];
+    [self publishProgress];
+}
+
+/// The user asked to install a build that is parked at the approval step:
+/// go straight on if nothing needs asking, otherwise ask.
+- (void)continueParkedInstallForBundleID:(NSString *)bundleID {
+    if ([self gateDecisionForBundleID:bundleID] == CDRNetworkGateDecisionNoAsk) {
+        [self resolveApproval:YES forBundleID:bundleID];
+        return;
+    }
+    [self presentNetworkApprovalForBundleID:bundleID];
+}
+
+- (void)presentNetworkApprovalForBundleID:(NSString *)bundleID {
+    CDRAppRegistration *reg = [self registrationForBundleID:bundleID];
+    CDRNetworkInspection *inspection = self.inspections[bundleID];
+    if (!reg || !inspection || !self.pendingApprovals[bundleID]) return;
+
+    NSMutableArray<CDRInterruptSheetDiffLine *> *diff = [NSMutableArray array];
+    for (NSString *key in inspection.addedEntitlements) {
+        [diff addObject:[CDRInterruptSheetDiffLine lineWithText:key added:YES]];
+    }
+    for (NSString *key in inspection.removedEntitlements) {
+        [diff addObject:[CDRInterruptSheetDiffLine lineWithText:key added:NO]];
+    }
+    NSMutableArray<CDRInterruptSheetPolicyRow *> *policyRows = nil;
+    // The policy is shown only when the gate's verdict is "ask, with policy".
+    if ([self gateDecisionForBundleID:bundleID] == CDRNetworkGateDecisionAskWithPolicy) {
+        policyRows = [NSMutableArray array];
+        for (CDRInternetAccessPolicyRow *row in inspection.stagedPolicy.rows) {
+            [policyRows addObject:[CDRInterruptSheetPolicyRow rowWithSubject:row.subject purpose:row.purpose]];
+        }
+    }
+
+    __weak typeof(self) weakSelf = self;
+    [self.presenter presentNetworkApprovalForAppNamed:reg.appURL.lastPathComponent.stringByDeletingPathExtension
+                                             bundleID:bundleID
+                                               appURL:reg.appURL
+                                          fromVersion:inspection.installedVersion
+                                            toVersion:inspection.stagedVersion
+                                            diffLines:diff
+                                           policyRows:policyRows
+                                           completion:^(CDRInterruptSheetAction action) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        switch (action) {
+            case CDRInterruptSheetActionInstall:
+                [CDRSharedLog log:[NSString stringWithFormat:@"%@: network access approved for %@.",
+                                   bundleID, inspection.stagedVersion]];
+                [self resolveApproval:YES forBundleID:bundleID];
+                break;
+            case CDRInterruptSheetActionSkipVersion: {
+                // Remember the skip, discard the staged build, and decide
+                // again so the row says "skipped".
+                CDRManifest *manifest = self.lastManifests[bundleID];
+                NSString *version = manifest.version ?: inspection.stagedVersion;
+                [self.stateStore noteSkippedVersion:version forBundleID:bundleID at:[NSDate date]];
+                [CDRSharedLog log:[NSString stringWithFormat:@"%@: skipping %@ at your request.", bundleID, version]];
+                [self resolveApproval:NO forBundleID:bundleID];
+                if (manifest) [self evaluateManifest:manifest registration:reg breakThrough:NO notify:NO];
+                [self rebuildRowModels];
+                break;
+            }
+            case CDRInterruptSheetActionDismiss:
+                // The sheet couldn't be shown. The build stays parked and
+                // the row keeps asking.
+                break;
+        }
+    }];
+}
+
+/// The app is quitting: parked approvals are discarded, not carried over.
+- (void)discardParkedApprovals {
+    for (NSString *bundleID in self.pendingApprovals.allKeys) {
+        [self resolveApproval:NO forBundleID:bundleID];
+    }
+}
+
 #pragma mark - Row actions
 
 - (void)performRowAction:(CDRAppRowActions)action forBundleID:(NSString *)bundleID {
@@ -462,6 +683,13 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             // An update the user holds for manual install is confirmed once
             // more, with what it contains in front of them. That goes for a
             // major-version stop that also carries held categories.
+            if (self.pendingApprovals[bundleID]) {
+                // Already downloaded, verified and inspected: approve it (or
+                // ask, if the gate says to) rather than start over.
+                [self.inspectingBundleIDs removeObject:bundleID];
+                [self continueParkedInstallForBundleID:bundleID];
+                break;
+            }
             CDRAppRegistration *reg = [self registrationForBundleID:bundleID];
             CDRManifest *manifest = self.knownManifests[bundleID];
             CDRUpdateDecision *decision = self.lastDecisions[bundleID];
@@ -561,6 +789,9 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
 
 - (BOOL)hasOperationsInCriticalPhase {
     for (NSString *bundleID in self.operationPhases) {
+        // An inspect-ahead download is Conductor's own idea and has touched
+        // nothing but staging: it never holds up quitting.
+        if ([self.inspectingBundleIDs containsObject:bundleID]) continue;
         CDRUpdatePhase phase = self.operationPhases[bundleID].integerValue;
         switch (phase) {
             case CDRUpdatePhaseDownloading:
@@ -607,6 +838,7 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         CDRUpdatePhase phase = self.operationPhases[bundleID].integerValue;
         if (phase < CDRUpdatePhaseFetching || phase > CDRUpdatePhaseFinishing) continue;
         if ([self.parkedBundleIDs containsObject:bundleID]) continue;
+        if (self.pendingApprovals[bundleID]) continue;   // parked for approval: nothing is happening
         [active addObject:bundleID];
         lastPhase = phase;
         if (phase == CDRUpdatePhaseDownloading) [downloading addObject:bundleID];
@@ -640,6 +872,54 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     return name ?: bundleID;
 }
 
+/// The operation has verified and inspected the staged build and is parked.
+/// What happens next depends on who started it.
+- (void)updateOperation:(CDRUpdateOperation *)op
+             didInspect:(CDRNetworkInspection *)inspection
+                  reply:(void (^)(BOOL proceed))reply {
+    NSString *bundleID = op.registration.bundleID;
+    if ([self.supersededBundleIDs containsObject:bundleID]) {
+        // The update it was fetched for is no longer the one on offer.
+        reply(NO);
+        return;
+    }
+    self.inspections[bundleID] = inspection;
+    for (NSString *warning in inspection.stagedPolicy.warnings) {
+        [CDRSharedLog log:[NSString stringWithFormat:@"%@: Internet Access Policy — %@", bundleID, warning]];
+    }
+    CDRNetworkGateDecision gate = [self gateDecisionForBundleID:bundleID];
+
+    if ([self.inspectingBundleIDs containsObject:bundleID]) {
+        // Conductor looked ahead on its own. It stops here until the user
+        // clicks — whatever the gate says. If the gate says to ask, the row
+        // moves to NEEDS YOU and a passive notice says why.
+        self.pendingApprovals[bundleID] = [reply copy];
+        if (gate != CDRNetworkGateDecisionNoAsk) {
+            NSString *appName = op.registration.appURL.lastPathComponent.stringByDeletingPathExtension;
+            NSString *reason = gate == CDRNetworkGateDecisionAskWithPolicy
+                ? [NSString stringWithFormat:@"%@ adds internet access and says why. Approve it in Conductor.",
+                   inspection.stagedVersion]
+                : [NSString stringWithFormat:@"%@ adds internet access and doesn’t say why. Review it in Conductor.",
+                   inspection.stagedVersion];
+            [self.presenter notifyUpdateNeedsAttentionForAppNamed:appName bundleID:bundleID
+                                                          version:inspection.stagedVersion reason:reason];
+        }
+        [self rebuildRowModels];
+        [self publishProgress];
+        return;
+    }
+
+    // The user started this install.
+    if (gate == CDRNetworkGateDecisionNoAsk) {
+        reply(YES);
+        return;
+    }
+    self.pendingApprovals[bundleID] = [reply copy];
+    [self rebuildRowModels];
+    [self publishProgress];
+    [self presentNetworkApprovalForBundleID:bundleID];
+}
+
 - (void)updateOperation:(CDRUpdateOperation *)op logMessage:(NSString *)message {
     [CDRSharedLog log:message];
 }
@@ -669,7 +949,22 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
     [self.operationPhases removeObjectForKey:bundleID];
     [self.parkedBundleIDs removeObject:bundleID];
     [self.downloadFractions removeObjectForKey:bundleID];
+    // Whether Conductor started this on its own, to inspect — in which case
+    // the user never asked for an install and must not be told one failed.
+    BOOL inspectAhead = [self.inspectingBundleIDs containsObject:bundleID];
+    [self.inspectingBundleIDs removeObject:bundleID];
+    [self.supersededBundleIDs removeObject:bundleID];
+    [self.pendingApprovals removeObjectForKey:bundleID];
+    [self.inspections removeObjectForKey:bundleID];
     [self publishProgress];
+
+    if (error && [error.domain isEqualToString:CDRErrorDomain] && error.code == CDRErrorApprovalDeclined) {
+        // Declined, skipped, superseded or discarded at quit: informational.
+        // Staging is gone; the installed app was never touched.
+        [CDRSharedLog log:[NSString stringWithFormat:@"%@: %@", bundleID, error.localizedDescription]];
+        [self rebuildRowModels];
+        return;
+    }
 
     if (error) {
         if ([error.domain isEqualToString:CDRErrorDomain] && error.code == CDRErrorUpdateCancelled) {
@@ -679,8 +974,9 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             [self rebuildRowModels];
             return;
         }
-        if ([error.domain isEqualToString:CDRErrorDomain] && error.code == CDRErrorDowngradeRefused
-            && ![self.reachedDownloadBundleIDs containsObject:bundleID]) {
+        BOOL retraction = [error.userInfo[CDRErrorIsRetractionKey] boolValue]
+            || ![self.reachedDownloadBundleIDs containsObject:bundleID];
+        if ([error.domain isEqualToString:CDRErrorDomain] && error.code == CDRErrorDowngradeRefused && retraction) {
             // The operation's last-moment manifest re-check caught a
             // retraction between notify and install (retraction.md) — this is
             // State A, not a generic failure. The operation stays state-free;
@@ -701,6 +997,15 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
                                                                       pulledAt:[NSDate date]],
                                        bundleID, self.defaults);
             }
+            if (inspectAhead) {
+                // Found while Conductor was looking ahead on its own: the
+                // same passive notice a scheduled check would post.
+                [self.presenter notifyRetractedPending:error.localizedDescription bundleID:bundleID
+                                             vendorURL:(error.userInfo[CDRErrorVendorURLKey]
+                                                        ?: op.registration.vendorURL)];
+                [self rebuildRowModels];
+                return;
+            }
             // The user pressed Install: a user-started flow.
             __weak typeof(self) weakSelf = self;
             [self.presenter presentRetractionForAppNamed:appName
@@ -714,6 +1019,16 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
                                               completion:^(BOOL acknowledged) {
                 if (acknowledged) [weakSelf performRowAction:CDRAppRowActionAcknowledge forBundleID:bundleID];
             }];
+            [self rebuildRowModels];
+            return;
+        }
+        if (inspectAhead) {
+            // Couldn't look ahead. Say so in the log and leave the update
+            // offered as it was; an install the user starts will report its
+            // own failure. Not retried for this version.
+            [CDRSharedLog log:[NSString stringWithFormat:@"%@: couldn’t inspect %@ ahead of time — %@",
+                               bundleID, op.manifestVersion, error.localizedDescription]];
+            self.failedInspectionVersions[bundleID] = op.manifestVersion;
             [self rebuildRowModels];
             return;
         }
@@ -786,6 +1101,19 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
         context.developerName = [self developerNameForRegistration:reg];
         context.preferences = [CDRPolicyResolver effectivePreferencesForBundleID:bundleID defaults:self.defaults];
         context.pendingRetraction = CDRRetractionNoticeForBundleID(bundleID, self.defaults);
+
+        CDRInstalledNetworkInfo *network = [self installedNetworkInfoForRegistration:reg];
+        context.installedNetworkKnown = YES;
+        context.installedPosture = network.posture;
+        context.installedPolicy = network.policy;
+        context.installedEntitlementKeys = network.entitlementKeys;
+        context.teamID = network.teamID;
+        context.inspection = self.inspections[bundleID];
+        context.inspecting = [self.inspectingBundleIDs containsObject:bundleID]
+            && self.operations[bundleID] != nil && self.pendingApprovals[bundleID] == nil;
+        context.approvalParked = self.pendingApprovals[bundleID] != nil;
+        context.networkApprovalNeeded = context.approvalParked
+            && [self gateDecisionForBundleID:bundleID] != CDRNetworkGateDecisionNoAsk;
         [rows addObject:[CDRAppRowModel modelForRegistration:reg
                                                 lastDecision:self.lastDecisions[bundleID]
                                              decidedManifest:self.lastManifests[bundleID]

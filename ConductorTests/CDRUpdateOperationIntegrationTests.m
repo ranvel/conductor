@@ -23,6 +23,9 @@
 #import "CDRNotarizationCheck.h"
 #import "CDRQuarantine.h"
 #import "CDRErrors.h"
+#import "CDRInternetAccessPolicy.h"
+#import "CDRNetworkInspection.h"
+#import "CDRUpdatePreferences.h"
 
 static NSString * const kTesteeBundleID = @"com.ranvel.conductor-testee";
 static const int kPort = 8000;
@@ -66,6 +69,38 @@ static const int kPort = 8000;
 }
 - (BOOL)sawPhase:(CDRUpdatePhase)phase {
     return [self.phases containsObject:@(phase)];
+}
+@end
+
+/// A delegate that takes part in the Inspect step (CND-7): records what the
+/// operation learned and answers as told.
+typedef NS_ENUM(NSInteger, CDRInspectAnswer) {
+    CDRInspectAnswerApprove = 0,
+    CDRInspectAnswerDecline,
+    /// Keep the operation parked; the test answers (or cancels) later.
+    CDRInspectAnswerHold,
+};
+
+@interface CDRInspectingDelegate : CDRIntegrationDelegate
+@property (nonatomic) CDRInspectAnswer answer;
+@property (nonatomic, nullable) CDRNetworkInspection *inspection;
+@property (nonatomic) NSUInteger inspectCount;
+@property (nonatomic, copy, nullable) void (^heldReply)(BOOL);
+@property (nonatomic, nullable) XCTestExpectation *inspected;
+@end
+
+@implementation CDRInspectingDelegate
+- (void)updateOperation:(CDRUpdateOperation *)op
+             didInspect:(CDRNetworkInspection *)inspection
+                  reply:(void (^)(BOOL))reply {
+    self.inspection = inspection;
+    self.inspectCount++;
+    switch (self.answer) {
+        case CDRInspectAnswerApprove: reply(YES); break;
+        case CDRInspectAnswerDecline: reply(NO); break;
+        case CDRInspectAnswerHold: self.heldReply = reply; break;
+    }
+    [self.inspected fulfill];
 }
 @end
 
@@ -215,6 +250,9 @@ static const int kPort = 8000;
     XCTAssertTrue([d sawPhase:CDRUpdatePhaseDownloading]);
     XCTAssertTrue([d sawPhase:CDRUpdatePhaseExtracting]);
     XCTAssertTrue([d sawPhase:CDRUpdatePhaseVerifying]);
+    // A delegate that takes no part in inspection never sees the phase: the
+    // pipeline is exactly what it was before the network gate existed.
+    XCTAssertFalse([d sawPhase:CDRUpdatePhaseInspecting]);
 
     if (notarized) {
         XCTAssertNil(d.finishError, @"full positive path: %@", d.finishError);
@@ -478,6 +516,225 @@ static const int kPort = 8000;
     XCTAssertEqual(d.finishError.code, CDRErrorManifestUnreachable);
     XCTAssertEqualObjects([self installedVersion], @"1.0");
     XCTAssertTrue([self stagingIsGone]);
+}
+
+#pragma mark - Network gate (CND-7)
+
+/// Points the installed copy's conductor.json at one of the harness manifests,
+/// so the operation's last-moment re-fetch sees the same version it was given.
+- (void)pointInstalledAppAtManifest:(NSString *)name {
+    NSURL *jsonURL = [self.installedApp URLByAppendingPathComponent:[CDRAppRegistration conductorJSONRelativePath]];
+    NSString *json = [NSString stringWithFormat:@"{\"conductor\":1,\"update_url\":\"http://127.0.0.1:%d/%@\"}", kPort, name];
+    XCTAssertTrue([json writeToURL:jsonURL atomically:YES encoding:NSUTF8StringEncoding error:NULL]);
+}
+
+/// The network-gate builds only exist after a harness run that made them,
+/// and Inspect sits behind the notarization check.
+- (BOOL)networkGateArtifactsAreUsable {
+    if (!self.serveDir) return NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:
+          [self.serveDir URLByAppendingPathComponent:@"manifest-1.2.json"].path]) return NO;
+    return [CDRNotarizationCheck assessBundleAtURL:self.installedApp error:NULL];
+}
+
+- (CDRInspectingDelegate *)runInspectingOperationWithManifest:(CDRManifest *)manifest answer:(CDRInspectAnswer)answer {
+    CDRInspectingDelegate *delegate = [[CDRInspectingDelegate alloc] init];
+    delegate.answer = answer;
+    delegate.finished = [self expectationWithDescription:@"operation finished"];
+    CDRUpdateOperation *op = [[CDRUpdateOperation alloc] initWithRegistration:[self registration]
+                                                                     manifest:manifest
+                                                                      session:self.session
+                                                                     delegate:delegate];
+    [op start];
+    [self waitForExpectations:@[delegate.finished] timeout:120];
+    return delegate;
+}
+
+static CDRUpdatePreferences *GatePreferences(BOOL policyExempts) {
+    CDRMutableUpdatePreferences *prefs = [[CDRUpdatePreferences defaultPreferences] mutableCopy];
+    prefs.requireNetworkApproval = YES;
+    prefs.policyExemptsApproval = policyExempts;
+    return [prefs copy];
+}
+
+- (void)testBuildThatGainsAccessWithAPolicyIsInspectedAfterVerifyAndInstallsOnApproval {
+    if (![self networkGateArtifactsAreUsable]) { XCTSkip(@"needs build-testee.sh --notarize (v1.2)"); }
+    [self pointInstalledAppAtManifest:@"manifest-1.2.json"];
+
+    CDRInspectingDelegate *d = [self runInspectingOperationWithManifest:[self manifestNamed:@"manifest-1.2.json"]
+                                                                 answer:CDRInspectAnswerApprove];
+
+    // Inspect came after Verify, once.
+    XCTAssertEqual(d.inspectCount, 1u);
+    NSUInteger verify = [d.phases indexOfObject:@(CDRUpdatePhaseVerifying)];
+    NSUInteger inspect = [d.phases indexOfObject:@(CDRUpdatePhaseInspecting)];
+    XCTAssertNotEqual(inspect, (NSUInteger)NSNotFound);
+    XCTAssertLessThan(verify, inspect);
+
+    // What it read, from the signed bundles themselves.
+    CDRNetworkInspection *inspection = d.inspection;
+    XCTAssertEqualObjects(inspection.installedVersion, @"1.0");
+    XCTAssertEqualObjects(inspection.stagedVersion, @"1.2");
+    XCTAssertEqual(inspection.installedPosture, CDRNetworkPostureNone);
+    XCTAssertEqual(inspection.stagedPosture, CDRNetworkPostureClient);
+    XCTAssertEqual(inspection.change, CDRNetworkChangeGained);
+    XCTAssertEqualObjects(inspection.addedEntitlements, (@[CDREntitlementNetworkClient]));
+    XCTAssertEqualObjects(inspection.teamID, @"F252L9GUBW");
+
+    // The policy, from under the staged build's seal: the wildcard in
+    // Conductor's words, the second purpose resolved through the bundle's
+    // .strings table, the host-less entry dropped, the service not shown.
+    XCTAssertTrue(inspection.hasPolicy);
+    XCTAssertEqualObjects([inspection.stagedPolicy.rows valueForKey:@"subject"],
+                          (@[@"Any server", @"search.example.com"]));
+    XCTAssertEqualObjects(inspection.stagedPolicy.rows[1].purpose,
+                          @"Podcast directory search, only when you type in Search.");
+    XCTAssertEqual(inspection.stagedPolicy.warnings.count, 2u);
+
+    // Both branches of the user's setting, on this real inspection.
+    XCTAssertEqual([CDRNetworkGate decisionForInspection:inspection preferences:GatePreferences(YES)],
+                   CDRNetworkGateDecisionNoAsk);
+    XCTAssertEqual([CDRNetworkGate decisionForInspection:inspection preferences:GatePreferences(NO)],
+                   CDRNetworkGateDecisionAskWithPolicy);
+
+    // Approved: the ordinary swap.
+    XCTAssertNil(d.finishError, @"%@", d.finishError);
+    XCTAssertEqualObjects([self installedVersion], @"1.2");
+    XCTAssertTrue([self stagingIsGone]);
+}
+
+- (void)testBuildThatGainsAccessWithoutAPolicyIsDiscardedWhenDeclined {
+    if (![self networkGateArtifactsAreUsable]) { XCTSkip(@"needs build-testee.sh --notarize (v1.3)"); }
+    [self pointInstalledAppAtManifest:@"manifest-1.3.json"];
+
+    CDRInspectingDelegate *d = [self runInspectingOperationWithManifest:[self manifestNamed:@"manifest-1.3.json"]
+                                                                 answer:CDRInspectAnswerDecline];
+
+    XCTAssertEqual(d.inspection.change, CDRNetworkChangeGained);
+    XCTAssertFalse(d.inspection.hasPolicy);
+    XCTAssertNil(d.inspection.stagedPolicy);
+    // No policy: asked whichever way the exemption is set.
+    XCTAssertEqual([CDRNetworkGate decisionForInspection:d.inspection preferences:GatePreferences(YES)],
+                   CDRNetworkGateDecisionAskWithoutPolicy);
+    XCTAssertEqual([CDRNetworkGate decisionForInspection:d.inspection preferences:GatePreferences(NO)],
+                   CDRNetworkGateDecisionAskWithoutPolicy);
+
+    // Declined: staging discarded like any failure; nothing else happened.
+    XCTAssertEqual(d.finishError.code, CDRErrorApprovalDeclined);
+    XCTAssertFalse([d sawPhase:CDRUpdatePhaseSwapping]);
+    XCTAssertFalse([d sawPhase:CDRUpdatePhaseAwaitingQuit]);
+    XCTAssertEqualObjects([self installedVersion], @"1.0", @"installed app untouched");
+    XCTAssertTrue([self stagingIsGone]);
+}
+
+- (void)testParkedApprovalHoldsTheVerifiedBuildAndCancellingDiscardsIt {
+    if (![self networkGateArtifactsAreUsable]) { XCTSkip(@"needs build-testee.sh --notarize (v1.3)"); }
+    [self pointInstalledAppAtManifest:@"manifest-1.3.json"];
+
+    CDRInspectingDelegate *delegate = [[CDRInspectingDelegate alloc] init];
+    delegate.answer = CDRInspectAnswerHold;
+    delegate.inspected = [self expectationWithDescription:@"inspected"];
+    delegate.finished = [self expectationWithDescription:@"operation finished"];
+    CDRUpdateOperation *op = [[CDRUpdateOperation alloc] initWithRegistration:[self registration]
+                                                                     manifest:[self manifestNamed:@"manifest-1.3.json"]
+                                                                      session:self.session
+                                                                     delegate:delegate];
+    [op start];
+    [self waitForExpectations:@[delegate.inspected] timeout:120];
+
+    // Parked: verified and staged, and going nowhere on its own.
+    XCTAssertTrue(op.isParkedForApproval);
+    XCTAssertEqual(op.phase, CDRUpdatePhaseInspecting);
+    XCTAssertFalse([self stagingIsGone], @"the verified build is held in staging");
+    XCTAssertEqualObjects([self installedVersion], @"1.0");
+    XCTestExpectation *stillParked = [self expectationWithDescription:@"still parked"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [stillParked fulfill];
+    });
+    [self waitForExpectations:@[stillParked] timeout:5];
+    XCTAssertTrue(op.isParkedForApproval);
+    XCTAssertFalse([delegate sawPhase:CDRUpdatePhaseSwapping]);
+    XCTAssertEqualObjects([self installedVersion], @"1.0");
+
+    // Discarded from outside (the app quitting, the update superseded).
+    [op cancelParkedApproval];
+    [self waitForExpectations:@[delegate.finished] timeout:30];
+    XCTAssertEqual(delegate.finishError.code, CDRErrorApprovalDeclined);
+    XCTAssertTrue([self stagingIsGone]);
+    XCTAssertEqualObjects([self installedVersion], @"1.0");
+
+    // A late answer to a discarded approval does nothing.
+    delegate.heldReply(YES);
+    XCTestExpectation *settled = [self expectationWithDescription:@"settled"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [settled fulfill];
+    });
+    [self waitForExpectations:@[settled] timeout:5];
+    XCTAssertEqualObjects([self installedVersion], @"1.0");
+    XCTAssertFalse([delegate sawPhase:CDRUpdatePhaseSwapping]);
+}
+
+- (void)testBuildThatDropsNetworkAccessIsReportedAsGoodNewsAndNeverAskedAbout {
+    if (![self networkGateArtifactsAreUsable]) { XCTSkip(@"needs build-testee.sh --notarize (v0.9)"); }
+    // Start from the unsandboxed 0.9; 1.1 is sandboxed with no network.
+    [[NSFileManager defaultManager] removeItemAtURL:self.installedApp error:NULL];
+    NSTask *copy = [[NSTask alloc] init];
+    copy.executableURL = [NSURL fileURLWithPath:@"/usr/bin/ditto"];
+    copy.arguments = @[[self.serveDir URLByAppendingPathComponent:@"ConductorTestee-0.9.app"].path, self.installedApp.path];
+    [copy launchAndReturnError:NULL];
+    [copy waitUntilExit];
+    XCTAssertEqualObjects([self installedVersion], @"0.9");
+
+    CDRInspectingDelegate *d = [self runInspectingOperationWithManifest:[self manifestNamed:@"manifest.json"]
+                                                                 answer:CDRInspectAnswerApprove];
+    XCTAssertEqual(d.inspection.installedPosture, CDRNetworkPostureUnrestricted);
+    XCTAssertEqual(d.inspection.stagedPosture, CDRNetworkPostureNone);
+    XCTAssertEqual(d.inspection.change, CDRNetworkChangeLost);
+    XCTAssertEqualObjects(d.inspection.addedEntitlements, (@[CDREntitlementAppSandbox]));
+    XCTAssertEqual([CDRNetworkGate decisionForInspection:d.inspection preferences:GatePreferences(NO)],
+                   CDRNetworkGateDecisionNoAsk);
+    XCTAssertNil(d.finishError, @"%@", d.finishError);
+    XCTAssertEqualObjects([self installedVersion], @"1.1");
+}
+
+- (void)testOrdinaryUpdateInspectsAsNoChange {
+    if (![self networkGateArtifactsAreUsable]) { XCTSkip(@"needs build-testee.sh --notarize"); }
+    CDRInspectingDelegate *d = [self runInspectingOperationWithManifest:[self manifestNamed:@"manifest.json"]
+                                                                 answer:CDRInspectAnswerApprove];
+    XCTAssertEqual(d.inspection.installedPosture, CDRNetworkPostureNone);
+    XCTAssertEqual(d.inspection.stagedPosture, CDRNetworkPostureNone);
+    XCTAssertEqual(d.inspection.change, CDRNetworkChangeNone);
+    XCTAssertEqual(d.inspection.addedEntitlements.count, 0u);
+    XCTAssertEqual([CDRNetworkGate decisionForInspection:d.inspection preferences:GatePreferences(NO)],
+                   CDRNetworkGateDecisionNoAsk);
+    XCTAssertNil(d.finishError, @"%@", d.finishError);
+    XCTAssertEqualObjects([self installedVersion], @"1.1");
+}
+
+- (void)testInspectNeverRunsOnABuildThatFailedVerify {
+    if (!self.serveDir) { XCTSkip(@"run TestHarness/build-testee.sh first"); }
+    // The ad-hoc build carries whatever entitlements an attacker likes. It
+    // must be refused by Verify before anything reads them.
+    [self pointInstalledAppAtManifest:@"manifest-adhoc.json"];
+    CDRInspectingDelegate *d = [self runInspectingOperationWithManifest:[self manifestNamed:@"manifest-adhoc.json"]
+                                                                 answer:CDRInspectAnswerApprove];
+    XCTAssertTrue(d.finishError.code == CDRErrorTeamIDMismatch || d.finishError.code == CDRErrorSignatureInvalid,
+                  @"got %@", d.finishError);
+    XCTAssertEqual(d.inspectCount, 0u, @"the delegate was never asked");
+    XCTAssertNil(d.inspection);
+    XCTAssertFalse([d sawPhase:CDRUpdatePhaseInspecting]);
+    XCTAssertEqualObjects([self installedVersion], @"1.0");
+    XCTAssertTrue([self stagingIsGone]);
+}
+
+- (void)testInspectNeverRunsOnAReplayedOlderBuild {
+    if (!self.serveDir) { XCTSkip(@"run TestHarness/build-testee.sh first"); }
+    [self pointInstalledAppAtManifest:@"manifest-replay.json"];
+    CDRInspectingDelegate *d = [self runInspectingOperationWithManifest:[self manifestNamed:@"manifest-replay.json"]
+                                                                 answer:CDRInspectAnswerApprove];
+    XCTAssertEqual(d.finishError.code, CDRErrorNotAnUpgrade);
+    XCTAssertEqual(d.inspectCount, 0u);
+    XCTAssertFalse([d sawPhase:CDRUpdatePhaseInspecting]);
 }
 
 @end

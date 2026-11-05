@@ -41,6 +41,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readwrite) CDRReleaseNoteTypeSet shownTypes;
 @property (nonatomic, readwrite) BOOL exposesDeveloperDetail;
 @property (nonatomic, readwrite, nullable) NSString *deferralDurationName;
+@property (nonatomic, readwrite) NSString *networkTitle;
+@property (nonatomic, readwrite) NSString *networkDetail;
+@property (nonatomic, readwrite) CDRNetworkRowTone networkTone;
+@property (nonatomic, readwrite, nullable) NSString *networkTrailing;
+@property (nonatomic, readwrite) NSArray<CDRInternetAccessPolicyRow *> *networkPolicyRows;
+@property (nonatomic, readwrite) NSArray<NSString *> *networkDeveloperLines;
 @end
 
 NS_ASSUME_NONNULL_END

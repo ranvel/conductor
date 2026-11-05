@@ -81,6 +81,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// applicationShouldTerminate:.
 - (BOOL)hasOperationsInCriticalPhase;
 
+/// Conductor is quitting. Builds parked at the approval step are declined
+/// (their staging discarded); nothing about an approval persists.
+- (void)discardParkedApprovals;
+
 @end
 
 /// Pure notification-loudness rule, evaluated against the state read BEFORE

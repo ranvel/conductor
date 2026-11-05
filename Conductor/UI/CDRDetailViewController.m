@@ -4,6 +4,7 @@
 //
 
 #import "CDRDetailViewController.h"
+#import "CDRInternetAccessPolicy.h"
 #import "CDRPalette.h"
 #import "CDRViews.h"
 #import "CDRWindowCopy.h"
@@ -363,9 +364,21 @@ static NSString *ShortDay(NSDate *date) {
 
 #pragma mark - NETWORK row
 
-/// CND-3 draws the row; CND-7 supplies what it says. Until then Conductor
-/// has not looked, and says exactly that.
+/// One line saying what the app may do on the network — and, once a new
+/// build has been verified and inspected, how that build compares. When the
+/// developer ships an Internet Access Policy the row expands to it.
 - (void)addNetworkRowForRow:(CDRAppRowModel *)row {
+    NSColor *tone = CDRPalette.textSecondary;
+    NSString *symbol = @"globe";
+    switch (row.networkTone) {
+        case CDRNetworkRowTonePositive: tone = CDRPalette.positiveText; break;
+        case CDRNetworkRowToneAttention: tone = CDRPalette.attentionText; symbol = @"exclamationmark.triangle"; break;
+        case CDRNetworkRowToneNeutral: break;
+    }
+    BOOL hasPolicy = row.networkPolicyRows.count > 0;
+    NSString *expandKey = [row.bundleID stringByAppendingString:@"|network"];
+    BOOL expanded = hasPolicy && [self.expandedKeys containsObject:expandKey];
+
     CDRSurfaceView *card = [CDRSurfaceView cardWithFill:CDRPalette.cardSurface border:CDRPalette.hairline radius:10];
     NSTextField *label = CDRLabel(@"", [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
                                   CDRPalette.textSecondary, NO);
@@ -374,23 +387,101 @@ static NSString *ShortDay(NSDate *date) {
         NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: CDRPalette.textSecondary,
     }];
-    NSImageView *globe = CDRSymbolView(@"globe", 13, NSFontWeightMedium, CDRPalette.textSecondary);
-    NSTextField *status = CDRLabel(@"Unknown", [NSFont systemFontOfSize:13.5 weight:NSFontWeightSemibold],
-                                   CDRPalette.textSecondary, NO);
-    NSTextField *detail = CDRLabel(@"Conductor hasn't inspected this app's network access.",
-                                   [NSFont systemFontOfSize:13], CDRPalette.textSecondary, NO);
+    NSImageView *glyph = CDRSymbolView(symbol, 13, NSFontWeightMedium, tone);
+    NSTextField *status = CDRLabel(row.networkTitle, [NSFont systemFontOfSize:13.5 weight:NSFontWeightSemibold],
+                                   tone, NO);
+    [status setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                     forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSTextField *detail = CDRLabel(row.networkDetail, [NSFont systemFontOfSize:13], CDRPalette.textSecondary, NO);
     [detail setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                      forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    NSStackView *stack = [self horizontalStack:@[label, globe, status, detail, [self flexibleSpacer]] spacing:8];
-    [stack setCustomSpacing:16 afterView:label];
-    [card addSubview:stack];
+    NSMutableArray<NSView *> *views = [NSMutableArray arrayWithObjects:label, glyph, status, detail,
+                                       [self flexibleSpacer], nil];
+    if (row.networkTrailing.length > 0) {
+        NSTextField *trailing = CDRLabel(row.networkTrailing, [NSFont systemFontOfSize:12.5],
+                                         CDRPalette.textSecondary, NO);
+        [trailing setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh
+                                           forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [views addObject:trailing];
+    }
+    if (hasPolicy) {
+        NSImageView *chevron = CDRSymbolView(expanded ? @"chevron.down" : @"chevron.right", 10.5, NSFontWeightBold,
+                                             CDRPalette.textSecondary);
+        [views addObject:chevron];
+    }
+    NSStackView *line = [self horizontalStack:views spacing:8];
+    [line setCustomSpacing:16 afterView:label];
+    [card addSubview:line];
     [NSLayoutConstraint activateConstraints:@[
-        [card.heightAnchor constraintEqualToConstant:36],
-        [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14],
-        [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
-        [stack.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [line.topAnchor constraintEqualToAnchor:card.topAnchor constant:8],
+        [line.heightAnchor constraintEqualToConstant:20],
+        [line.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14],
+        [line.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
     ]];
+    NSLayoutYAxisAnchor *bottom = line.bottomAnchor;
+
+    if (hasPolicy) {
+        // The whole line toggles the policy, like a skipped version's row.
+        NSButton *toggle = [NSButton buttonWithTitle:@"" target:self action:@selector(skippedToggled:)];
+        toggle.translatesAutoresizingMaskIntoConstraints = NO;
+        toggle.bordered = NO;
+        toggle.transparent = YES;
+        toggle.identifier = expandKey;
+        [toggle setAccessibilityLabel:expanded ? @"Hide the Internet Access Policy"
+                                               : @"Show the Internet Access Policy"];
+        [card addSubview:toggle];
+        [NSLayoutConstraint activateConstraints:@[
+            [toggle.topAnchor constraintEqualToAnchor:card.topAnchor],
+            [toggle.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+            [toggle.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+            [toggle.heightAnchor constraintEqualToConstant:36],
+        ]];
+    }
+
+    NSMutableArray<NSView *> *extra = [NSMutableArray array];
+    if (expanded) {
+        [extra addObject:CDRLabel(@"Internet Access Policy · from the developer",
+                                  [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+                                  CDRPalette.textPrimary, NO)];
+        for (CDRInternetAccessPolicyRow *policyRow in row.networkPolicyRows) {
+            NSTextField *subject = CDRLabel(policyRow.subject, CDRMonoFont(12, NSFontWeightRegular),
+                                            CDRPalette.textPrimary, YES);
+            NSString *purposeText = (row.exposesDeveloperDetail && policyRow.transport)
+                ? [NSString stringWithFormat:@"%@  (%@%@)", policyRow.purpose, policyRow.transport,
+                   policyRow.incoming ? @", incoming" : @""]
+                : policyRow.purpose;
+            NSTextField *purpose = CDRLabel(purposeText, [NSFont systemFontOfSize:13], CDRPalette.textPrimary, YES);
+            NSStackView *pair = [self horizontalStack:@[subject, purpose] spacing:14];
+            pair.alignment = NSLayoutAttributeTop;
+            [subject.widthAnchor constraintEqualToConstant:190].active = YES;
+            [extra addObject:pair];
+        }
+    }
+    for (NSString *developerLine in row.networkDeveloperLines) {
+        NSTextField *mono = CDRLabel(developerLine, CDRMonoFont(11.5, NSFontWeightRegular),
+                                     CDRPalette.textSecondary, NO);
+        mono.selectable = YES;
+        [extra addObject:mono];
+    }
+    if (extra.count > 0) {
+        CDRHairlineView *rule = [[CDRHairlineView alloc] initWithFrame:NSZeroRect];
+        NSStackView *stack = [self verticalStack:extra spacing:8];
+        [card addSubview:rule];
+        [card addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [rule.topAnchor constraintEqualToAnchor:line.bottomAnchor constant:8],
+            [rule.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+            [rule.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+            [stack.topAnchor constraintEqualToAnchor:rule.bottomAnchor constant:10],
+            [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14],
+            [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
+        ]];
+        bottom = stack.bottomAnchor;
+        [bottom constraintEqualToAnchor:card.bottomAnchor constant:-12].active = YES;
+    } else {
+        [bottom constraintEqualToAnchor:card.bottomAnchor constant:-8].active = YES;
+    }
     [self addSection:card spacingBefore:22];
 }
 
@@ -460,6 +551,16 @@ static NSString *ShortDay(NSDate *date) {
                spacingBefore:14];
             break;
         }
+        case CDRAppRowStateSkipped: {
+            NSString *version = row.advertisedVersion ?: @"This version";
+            NSView *card = [self cardWithSymbol:@"forward"
+                                          title:[NSString stringWithFormat:@"You skipped %@", version]
+                                           body:[NSString stringWithFormat:
+                @"%@ stays installed. Conductor will tell you about the next version; checking this app now brings %@ back.",
+                row.installedVersion, version]];
+            [self addSection:card spacingBefore:18];
+            break;
+        }
         case CDRAppRowStateUpToDate: {
             NSString *text = [NSString stringWithFormat:@"%@ %@ is the latest version.", row.appName, row.installedVersion];
             [self addSection:CDRLabel(text, BodyFont(), CDRPalette.textSecondary, YES) spacingBefore:24];
@@ -484,8 +585,11 @@ static NSString *ShortDay(NSDate *date) {
         case CDRUpdatePhaseExtracting:
         case CDRUpdatePhaseVerifying:
             return 1;
-        default:
+        case CDRUpdatePhaseInspecting:
             return 2;
+        default:
+            // An install is past inspection; an inspect-ahead is ready.
+            return inspecting ? 3 : 2;
     }
 }
 

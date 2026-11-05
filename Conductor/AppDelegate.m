@@ -489,6 +489,14 @@
 #pragma mark - NSApplicationDelegate
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
+    // Nothing about an approval or an inspect-ahead download carries over a
+    // quit. By now no operation is mid-swap (applicationShouldTerminate:
+    // waits those out), so whatever is left in staging never became an
+    // install and is removed. /Applications itself is not touched.
+    [self.updateController discardParkedApprovals];
+    NSURL *root = [CDRArtifactStager stagingRootNearDestination:
+        [NSURL fileURLWithPath:@"/Applications" isDirectory:YES]];
+    [[NSFileManager defaultManager] removeItemAtURL:root error:NULL];
 }
 
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app {

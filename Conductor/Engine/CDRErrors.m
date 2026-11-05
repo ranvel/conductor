@@ -9,6 +9,7 @@ NSErrorDomain const CDRErrorDomain = @"com.ranvel.Conductor.ErrorDomain";
 
 NSString * const CDRErrorBundleIDKey  = @"CDRErrorBundleID";
 NSString * const CDRErrorVendorURLKey = @"CDRErrorVendorURL";
+NSString * const CDRErrorIsRetractionKey = @"CDRErrorIsRetraction";
 
 static NSString *CDRLocalizedDescriptionForCode(CDRErrorCode code, NSString *_Nullable bundleID) {
     NSString *app = bundleID ?: @"the app";
@@ -63,6 +64,8 @@ static NSString *CDRLocalizedDescriptionForCode(CDRErrorCode code, NSString *_Nu
             return [NSString stringWithFormat:@"Conductor does not have permission to replace %@ (it may be owned by another user). Update it manually, or adjust its ownership.", app];
         case CDRErrorUpdateCancelled:
             return [NSString stringWithFormat:@"The pending update for %@ was canceled. Nothing was changed.", app];
+        case CDRErrorApprovalDeclined:
+            return [NSString stringWithFormat:@"The update for %@ was not approved. Nothing was changed.", app];
     }
     return @"An unknown error occurred.";
 }

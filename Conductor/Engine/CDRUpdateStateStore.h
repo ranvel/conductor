@@ -48,6 +48,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Retraction State A resolution from outside the normal check path — the
 /// last-moment re-check refusal (retraction.md). No-op for unknown apps.
 - (void)clearNotifiedVersionForBundleID:(NSString *)bundleID at:(NSDate *)date;
+/// "Skip this version": remembered until a different version is advertised
+/// or the user checks that app by hand.
+- (void)noteSkippedVersion:(NSString *)version forBundleID:(NSString *)bundleID at:(NSDate *)date;
 
 @end
 

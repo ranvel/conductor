@@ -8,6 +8,36 @@
 
 @implementation CDRBundleInspector
 
++ (nullable NSDictionary *)entitlementsForBundleAtURL:(NSURL *)url teamID:(NSString **)outTeamID {
+    if (outTeamID) *outTeamID = nil;
+    SecStaticCodeRef staticCode = NULL;
+    if (SecStaticCodeCreateWithPath((__bridge CFURLRef)url, kSecCSDefaultFlags, &staticCode) != errSecSuccess
+        || !staticCode) {
+        return nil;
+    }
+    // One call returns the identifier, the Team ID and the entitlements
+    // dictionary together (the entitlements need no flag of their own).
+    CFDictionaryRef infoRef = NULL;
+    OSStatus status = SecCodeCopySigningInformation(staticCode, kSecCSSigningInformation, &infoRef);
+    CFRelease(staticCode);
+    if (status != errSecSuccess || !infoRef) return nil;
+    NSDictionary *info = CFBridgingRelease(infoRef);
+
+    // No identifier means no signature at all: nothing to read from.
+    if (![info[(__bridge NSString *)kSecCodeInfoIdentifier] isKindOfClass:[NSString class]]) return nil;
+    NSString *team = info[(__bridge NSString *)kSecCodeInfoTeamIdentifier];
+    if (outTeamID && [team isKindOfClass:[NSString class]]) *outTeamID = team;
+
+    // Absent for a signed bundle that declares no entitlements.
+    NSDictionary *entitlements = info[(__bridge NSString *)kSecCodeInfoEntitlementsDict];
+    return [entitlements isKindOfClass:[NSDictionary class]] ? entitlements : @{};
+}
+
++ (CDRNetworkPosture)networkPostureForBundleAtURL:(NSURL *)url {
+    NSDictionary *entitlements = [self entitlementsForBundleAtURL:url teamID:NULL];
+    return entitlements ? CDRNetworkPostureFromEntitlements(entitlements) : CDRNetworkPostureUnknown;
+}
+
 + (nullable NSString *)developerNameForBundleAtURL:(NSURL *)url {
     SecStaticCodeRef staticCode = NULL;
     if (SecStaticCodeCreateWithPath((__bridge CFURLRef)url, kSecCSDefaultFlags, &staticCode) != errSecSuccess

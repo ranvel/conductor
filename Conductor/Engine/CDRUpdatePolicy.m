@@ -173,6 +173,14 @@ NSString *CDRSoakDurationDefaultsToken(CDRSoakDuration duration) {
                         nil, nil, ingested);
     }
 
+    // "Skip this version" is the user's own choice about this exact version,
+    // so — like their gates — urgency does not override it. A deliberate
+    // per-app check does: it forgets the skip and decides afresh.
+    if (ingested.skippedVersion && [CDRVersion compare:latest to:ingested.skippedVersion] == NSOrderedSame) {
+        if (!breakThrough) return decision(CDRUpdateOutcomeSkipped, nil, nil, ingested);
+        ingested = [ingested stateByClearingSkippedVersionAt:now];
+    }
+
     CDRAppUpdateState *notifiedState = [ingested stateByNotingNotifiedVersion:latest
                                                                         build:manifest.build
                                                                            at:now];

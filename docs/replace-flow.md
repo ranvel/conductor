@@ -9,8 +9,8 @@ related: [MUW-145]
 
 # Bundle Replacement Flow
 
-How Conductor replaces a third-party app bundle: **verify → stage → quit →
-swap → dequarantine → finish**. The security rationale is written down here
+How Conductor replaces a third-party app bundle: **verify → stage → inspect
+→ quit → swap → dequarantine → finish**. The security rationale is written down here
 so it survives into the public spec's security section later.
 
 Design invariants:
@@ -126,6 +126,54 @@ every managed app already participates in:
 	JSON file and no cryptographic ceremony.
 *	The **downgrade check** (3.2 above) closes the remaining gap:
 	replay of an older validly-signed build.
+
+## 3a. Inspect — consent, not verification (v2, CND-7)
+
+After every check in §3 has passed, and only then, Conductor reads what the
+verified staged build is *allowed* to do on the network and compares it
+with the installed build:
+
+*	**Entitlements**, from each bundle's code signature
+	(`SecCodeCopySigningInformation`) — never from a file beside the
+	bundle. Three keys matter: `com.apple.security.app-sandbox`,
+	`com.apple.security.network.client`, `com.apple.security.network.server`.
+	A sandboxed bundle with neither network key has **no network
+	access**; a bundle that is not sandboxed is **unrestricted**.
+*	**The Internet Access Policy**, if the staged build ships one
+	(`Contents/Resources/InternetAccessPolicy.plist`, Objective
+	Development's format — the file Little Snitch reads). It is a sealed
+	resource of the bundle §3 just validated.
+
+What this step is, and is not:
+
+*	**It runs after Verify, on the staged bundle, never before.** A build
+	that fails any §3 check is refused there; nothing reads its
+	entitlements or its policy file. (An attacker's build can claim any
+	entitlements it likes — it never gets this far.)
+*	**It is a consent input, not a verification input.** A build that
+	passes §3 is installable. Inspect cannot refuse one; it only decides
+	whether the user is asked first. If a future version ever wants
+	inspection to refuse a build, that is a change to §3 and a spec
+	conversation, not a tweak here.
+*	**It reads; it mutates nothing.** No extra change to /Applications,
+	no move of staging, no quarantine change. The swap in §5 remains the
+	sole mutation of /Applications.
+*	**The operation parks here** until the user (or the gate's rule)
+	answers. Approve continues to §4; decline discards staging exactly
+	like any failure. If the park lasted more than a few minutes, the
+	manifest is re-fetched first and a retraction aborts cleanly
+	(retraction.md's last-moment re-check, repeated).
+*	**Nothing about a parked approval persists.** Quitting Conductor
+	discards it and its staging; the next check starts over.
+
+The rule for asking (the "network gate") is the user's, set in Settings:
+ask when a new build goes from **no network access** to **having access**
+— unless it ships a policy and the user has said a policy is explanation
+enough. A build that *drops* network access is shown as good news and
+never asked about. Because the rule needs the downloaded build, Conductor
+fetches and fully verifies an available update ahead of time **only** for
+apps whose installed build has no network access; that operation always
+stops at this step and never proceeds without a click.
 
 ## 4. Quit check
 

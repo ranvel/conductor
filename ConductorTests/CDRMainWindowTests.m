@@ -44,9 +44,10 @@
         @(CDRAppRowStateUnknown): @(CDRAppRowSectionNotChecked),
         @(CDRAppRowStateCheckFailed): @(CDRAppRowSectionNotChecked),
         @(CDRAppRowStateIgnored): @(CDRAppRowSectionNotChecked),
+        @(CDRAppRowStateSkipped): @(CDRAppRowSectionUpdates),
     };
     // Every state is listed above: a state added later must be placed here.
-    XCTAssertEqual(expected.count, (NSUInteger)(CDRAppRowStateNeedsNetworkApproval + 1));
+    XCTAssertEqual(expected.count, (NSUInteger)(CDRAppRowStateSkipped + 1));
     [expected enumerateKeysAndObjectsUsingBlock:^(NSNumber *state, NSNumber *section, BOOL *stop) {
         XCTAssertEqual(CDRAppRowSectionForState((CDRAppRowState)state.integerValue),
                        (CDRAppRowSection)section.integerValue, @"state %@", state);
@@ -441,6 +442,43 @@
     }
     XCTAssertNotNil(override);
     XCTAssertFalse(override.isEnabled);
+}
+
+#pragma mark - NETWORK row
+
+- (void)testNetworkRowDrawsTheRowModelAndExpandsToThePolicy {
+    CDRMainWindowController *controller = [self windowWithRows:[CDRRowFixtures designRows]];
+    CDRDetailViewController *detail = controller.detailViewController;
+
+    // The design's own row.
+    controller.selectedBundleID = [CDRRowFixtures designRowNamed:@"muwav"].bundleID;
+    XCTAssertTrue([self view:detail.view containsText:@"No network access"]);
+    XCTAssertTrue([self view:detail.view containsText:@"Same as 1.2 · this build makes no connections"]);
+    XCTAssertTrue([self view:detail.view containsText:@"Team ID matches"]);
+    XCTAssertNil([self buttonIn:detail.view withIdentifierSuffix:@"|network"], @"no policy: nothing to expand");
+
+    // A build that gains access and ships a policy: collapsed, then expanded.
+    CDRAppRowModel *vancast = [CDRRowFixtures designRowNamed:@"Van-cast"];
+    controller.selectedBundleID = vancast.bundleID;
+    XCTAssertTrue([self view:detail.view containsText:@"Gains internet access"]);
+    XCTAssertFalse([self view:detail.view containsText:@"search.example.com"]);
+    NSButton *toggle = [self buttonIn:detail.view withIdentifierSuffix:@"|network"];
+    XCTAssertNotNil(toggle);
+    [toggle performClick:nil];
+    XCTAssertTrue([self view:detail.view containsText:@"Internet Access Policy · from the developer"]);
+    XCTAssertTrue([self view:detail.view containsText:@"Any server"]);
+    XCTAssertTrue([self view:detail.view containsText:@"search.example.com"]);
+    XCTAssertTrue([self view:detail.view containsText:@"Podcast directory search, only when you type in Search."]);
+    [self renderWindow:controller.window named:@"network-policy-expanded-light"];
+    controller.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    [self renderWindow:controller.window named:@"network-policy-expanded-dark"];
+
+    // Developer scheme: the raw lines sit under the row.
+    vancast.networkDeveloperLines = @[@"Team ID F252L9GUBW", @"installed: app-sandbox",
+                                      @"+ com.apple.security.network.client"];
+    controller.rowModels = @[vancast];
+    XCTAssertTrue([self view:detail.view containsText:@"+ com.apple.security.network.client"]);
+    XCTAssertTrue([self view:detail.view containsText:@"Team ID F252L9GUBW"]);
 }
 
 #pragma mark - Interrupt sheets

@@ -12,8 +12,17 @@ static NSString * const kLastNotifiedVersionKey = @"last_notified_version";
 static NSString * const kLastNotifiedBuildKey = @"last_notified_build";
 static NSString * const kNotifiedAtKey = @"notified_at";
 static NSString * const kUpdatedAtKey = @"updated_at";
+static NSString * const kSkippedVersionKey = @"skipped_version";
 
 @implementation CDRAppUpdateState
+
+/// `skippedVersion` rides outside the designated initializer (whose
+/// signature is part of the M2 contract): every derived copy passes through
+/// here to say whether the skip survives.
+- (instancetype)carryingSkippedVersion:(nullable NSString *)skippedVersion {
+    _skippedVersion = [skippedVersion copy];
+    return self;
+}
 
 - (instancetype)initWithBundleID:(NSString *)bundleID
                  lastSeenVersion:(NSString *)lastSeenVersion
@@ -62,20 +71,42 @@ static NSString * const kUpdatedAtKey = @"updated_at";
 - (instancetype)stateBySeeingVersion:(NSString *)version build:(NSString *)build at:(NSDate *)date {
     NSMutableDictionary<NSString *, NSDate *> *firstSeen = [self.firstSeenByVersion mutableCopy];
     if (!firstSeen[version]) firstSeen[version] = date;
-    return [[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
-                                       lastSeenVersion:version
-                                         lastSeenBuild:build
-                                    firstSeenByVersion:[self prunedFirstSeenKeeping:firstSeen
-                                                                        seenVersion:version
-                                                                    notifiedVersion:self.lastNotifiedVersion]
-                                   lastNotifiedVersion:self.lastNotifiedVersion
-                                     lastNotifiedBuild:self.lastNotifiedBuild
-                                            notifiedAt:self.notifiedAt
-                                             updatedAt:date];
+    // A skip is about exactly one version. Once the developer advertises a
+    // different one, there is nothing left to skip.
+    NSString *skipped = [self.skippedVersion isEqualToString:version] ? self.skippedVersion : nil;
+    return [[[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
+                                        lastSeenVersion:version
+                                          lastSeenBuild:build
+                                     firstSeenByVersion:[self prunedFirstSeenKeeping:firstSeen
+                                                                         seenVersion:version
+                                                                     notifiedVersion:self.lastNotifiedVersion]
+                                    lastNotifiedVersion:self.lastNotifiedVersion
+                                      lastNotifiedBuild:self.lastNotifiedBuild
+                                             notifiedAt:self.notifiedAt
+                                              updatedAt:date] carryingSkippedVersion:skipped];
+}
+
+- (instancetype)copyUpdatedAt:(NSDate *)date skippedVersion:(nullable NSString *)skippedVersion {
+    return [[[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
+                                        lastSeenVersion:self.lastSeenVersion
+                                          lastSeenBuild:self.lastSeenBuild
+                                     firstSeenByVersion:self.firstSeenByVersion
+                                    lastNotifiedVersion:self.lastNotifiedVersion
+                                      lastNotifiedBuild:self.lastNotifiedBuild
+                                             notifiedAt:self.notifiedAt
+                                              updatedAt:date] carryingSkippedVersion:skippedVersion];
+}
+
+- (instancetype)stateBySkippingVersion:(NSString *)version at:(NSDate *)date {
+    return [self copyUpdatedAt:date skippedVersion:version];
+}
+
+- (instancetype)stateByClearingSkippedVersionAt:(NSDate *)date {
+    return [self copyUpdatedAt:date skippedVersion:nil];
 }
 
 - (instancetype)stateByNotingNotifiedVersion:(NSString *)version build:(NSString *)build at:(NSDate *)date {
-    return [[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
+    return [[[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
                                        lastSeenVersion:self.lastSeenVersion
                                          lastSeenBuild:self.lastSeenBuild
                                     firstSeenByVersion:[self prunedFirstSeenKeeping:self.firstSeenByVersion
@@ -84,11 +115,11 @@ static NSString * const kUpdatedAtKey = @"updated_at";
                                    lastNotifiedVersion:version
                                      lastNotifiedBuild:build
                                             notifiedAt:date
-                                             updatedAt:date];
+                                             updatedAt:date] carryingSkippedVersion:self.skippedVersion];
 }
 
 - (instancetype)stateByClearingNotifiedAt:(NSDate *)date {
-    return [[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
+    return [[[CDRAppUpdateState alloc] initWithBundleID:self.bundleID
                                        lastSeenVersion:self.lastSeenVersion
                                          lastSeenBuild:self.lastSeenBuild
                                     firstSeenByVersion:[self prunedFirstSeenKeeping:self.firstSeenByVersion
@@ -97,7 +128,7 @@ static NSString * const kUpdatedAtKey = @"updated_at";
                                    lastNotifiedVersion:nil
                                      lastNotifiedBuild:nil
                                             notifiedAt:nil
-                                             updatedAt:date];
+                                             updatedAt:date] carryingSkippedVersion:self.skippedVersion];
 }
 
 #pragma mark - Plist round-trip
@@ -125,14 +156,15 @@ static NSDate *DateOrNil(id value) {
         }];
     }
 
-    return [[self alloc] initWithBundleID:bundleID
-                          lastSeenVersion:StringOrNil(entry[kLastSeenVersionKey])
-                            lastSeenBuild:StringOrNil(entry[kLastSeenBuildKey])
-                       firstSeenByVersion:firstSeen
-                      lastNotifiedVersion:StringOrNil(entry[kLastNotifiedVersionKey])
-                        lastNotifiedBuild:StringOrNil(entry[kLastNotifiedBuildKey])
-                               notifiedAt:DateOrNil(entry[kNotifiedAtKey])
-                                updatedAt:updatedAt];
+    return [[[self alloc] initWithBundleID:bundleID
+                           lastSeenVersion:StringOrNil(entry[kLastSeenVersionKey])
+                             lastSeenBuild:StringOrNil(entry[kLastSeenBuildKey])
+                        firstSeenByVersion:firstSeen
+                       lastNotifiedVersion:StringOrNil(entry[kLastNotifiedVersionKey])
+                         lastNotifiedBuild:StringOrNil(entry[kLastNotifiedBuildKey])
+                                notifiedAt:DateOrNil(entry[kNotifiedAtKey])
+                                 updatedAt:updatedAt]
+            carryingSkippedVersion:StringOrNil(entry[kSkippedVersionKey])];
 }
 
 - (NSDictionary *)propertyListEntry {
@@ -144,6 +176,7 @@ static NSDate *DateOrNil(id value) {
     if (self.lastNotifiedBuild) entry[kLastNotifiedBuildKey] = self.lastNotifiedBuild;
     if (self.notifiedAt) entry[kNotifiedAtKey] = self.notifiedAt;
     entry[kUpdatedAtKey] = self.updatedAt;
+    if (self.skippedVersion) entry[kSkippedVersionKey] = self.skippedVersion;
     return entry;
 }
 

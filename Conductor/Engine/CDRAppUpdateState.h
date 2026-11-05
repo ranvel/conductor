@@ -29,6 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSDate *notifiedAt;
 /// Refreshed on every mutation; the store's retention TTL keys on it.
 @property (nonatomic, readonly) NSDate *updatedAt;
+/// A version the user chose to skip ("Skip this version" on a network
+/// approval). One version only: seeing any other version advertised forgets
+/// it. Not a security input — it only decides whether to show an update.
+@property (nonatomic, readonly, nullable) NSString *skippedVersion;
 
 - (instancetype)initWithBundleID:(NSString *)bundleID
                  lastSeenVersion:(nullable NSString *)lastSeenVersion
@@ -61,6 +65,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Retraction State A resolution: the pending promise is cleared; loudness for
 /// that version is one-time-ever because this removes the memory that owed it.
 - (instancetype)stateByClearingNotifiedAt:(NSDate *)date;
+- (instancetype)stateBySkippingVersion:(NSString *)version at:(NSDate *)date;
+- (instancetype)stateByClearingSkippedVersionAt:(NSDate *)date;
 
 /// Plist round-trip. Returns nil when the entry is garbage (wrong types).
 + (nullable instancetype)stateWithBundleID:(NSString *)bundleID

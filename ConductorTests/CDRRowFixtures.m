@@ -6,6 +6,7 @@
 #import "CDRRowFixtures.h"
 #import "CDRAppRowModel_Private.h"
 #import "CDRManifest.h"
+#import "CDRInternetAccessPolicy.h"
 
 @implementation CDRRowFixtures
 
@@ -118,6 +119,16 @@ static NSArray<NSDictionary *> *NoteDicts(NSArray<NSArray<NSString *> *> *pairs)
                                                @[@"fixed", @"Artwork no longer flickers."]]
                                      history:nil];
 
+    // What the network gate found for Van-cast: 0.5 gains access and says why.
+    vancast.networkTitle = @"Gains internet access";
+    vancast.networkTone = CDRNetworkRowToneAttention;
+    vancast.networkDetail = @"0.4 made no connections · 0.5 says where it connects, and why";
+    vancast.networkTrailing = @"Team ID matches";
+    vancast.networkPolicyRows = [CDRInternetAccessPolicy policyWithPropertyList:@{@"Connections": @[
+        @{@"Host": @"*", @"Purpose": @"Checks your subscriptions for new episodes and downloads them."},
+        @{@"Host": @"search.example.com", @"Purpose": @"Podcast directory search, only when you type in Search."},
+    ]} strings:nil].rows;
+
     CDRAppRowModel *smoothMove = [self rowNamed:@"SmoothMove" state:CDRAppRowStateHeld
                                       installed:@"1.3" advertised:@"1.4"
                                           notes:@[@[@"removed", @"Snap-resistance override for external displays. macOS now handles this itself."],
@@ -147,12 +158,21 @@ static NSArray<NSDictionary *> *NoteDicts(NSArray<NSArray<NSString *> *> *pairs)
                                                        @[@"improved", @"Lower memory use during playback."],
                                                        @[@"fixed", @"The mini player remembers its position."]]}];
 
+    // The Main window design's NETWORK row.
+    muwav.networkTitle = @"No network access";
+    muwav.networkTone = CDRNetworkRowTonePositive;
+    muwav.networkDetail = @"Same as 1.2 · this build makes no connections";
+    muwav.networkTrailing = @"Team ID matches";
+
     CDRAppRowModel *understudy = [self rowNamed:@"Understudy" state:CDRAppRowStateInspecting
                                       installed:@"0.8" advertised:@"0.9"
                                           notes:@[@[@"added", @"Rehearse with a second voice."],
                                                   @[@"fixed", @"Scripts with tabs import cleanly."]]
                                         history:nil];
     understudy.operationPhase = CDRUpdatePhaseDownloading;
+    understudy.networkTitle = @"No network access";
+    understudy.networkTone = CDRNetworkRowTonePositive;
+    understudy.networkDetail = @"This app makes no connections";
 
     CDRAppRowModel *xkcd = [self rowNamed:@"xkcd Adopted" state:CDRAppRowStateDeferred
                                 installed:@"2.0.1" advertised:@"2.0.2"

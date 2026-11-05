@@ -371,7 +371,7 @@ static const CGFloat kCardPadding = 16;
     self.requireApprovalSwitch.action = @selector(networkToggled:);
     [self.requireApprovalSwitch setAccessibilityLabel:@"Require approval when an app gains internet access"];
     NSView *requireRow = [self rowWithTitle:[self rowTitle:@"Require approval when an app gains internet access"]
-                                    caption:[self captionLabel:@"Conductor compares entitlements with the build you have."]
+                                    caption:[self captionLabel:@"Conductor compares entitlements with the build you have. For an app with no network access, it downloads and verifies a new build first."]
                                     control:self.requireApprovalSwitch];
 
     self.policyExemptsSwitch = [[NSSwitch alloc] initWithFrame:NSZeroRect];

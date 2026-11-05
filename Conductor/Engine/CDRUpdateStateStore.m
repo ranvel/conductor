@@ -114,4 +114,10 @@ static const NSTimeInterval kRetentionInterval = 90.0 * 24.0 * 60.0 * 60.0;
     [self putState:[state stateByClearingNotifiedAt:date]];
 }
 
+- (void)noteSkippedVersion:(NSString *)version forBundleID:(NSString *)bundleID at:(NSDate *)date {
+    CDRAppUpdateState *state = [self stateForBundleID:bundleID]
+        ?: [CDRAppUpdateState emptyStateWithBundleID:bundleID at:date];
+    [self putState:[state stateBySkippingVersion:version at:date]];
+}
+
 @end

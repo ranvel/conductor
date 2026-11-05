@@ -48,7 +48,15 @@ typedef NS_ERROR_ENUM(CDRErrorDomain, CDRErrorCode) {
     CDRErrorSwapFailed                   = 502,
     CDRErrorPermissionDenied             = 503,
     CDRErrorUpdateCancelled              = 504,
+    /// The user declined (or skipped) a verified build at the approval
+    /// step. Informational: staging is discarded, nothing was changed.
+    CDRErrorApprovalDeclined             = 505,
 };
+
+/// userInfo key (NSNumber BOOL) on a CDRErrorDowngradeRefused raised by a
+/// manifest re-check: the advertised version dropped below what the user
+/// was shown — a retraction, not a replayed artifact.
+extern NSString * const CDRErrorIsRetractionKey;
 
 /// Builds a CDRErrorDomain error with localized description copy centralized here.
 NSError *CDRError(CDRErrorCode code, NSString *_Nullable bundleID,

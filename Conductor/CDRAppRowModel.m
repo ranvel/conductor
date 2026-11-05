@@ -9,6 +9,8 @@
 #import "CDRUpdatePolicy.h"
 #import "CDRUpdatePreferences.h"
 #import "CDRRetractionNotices.h"
+#import "CDRNetworkInspection.h"
+#import "CDRInternetAccessPolicy.h"
 #import "CDRManifest.h"
 #import "CDRVersion.h"
 #import "CDRErrors.h"
@@ -38,6 +40,11 @@ CDRAppRowSection CDRAppRowSectionForState(CDRAppRowState state) {
         case CDRAppRowStateCheckFailed:
         case CDRAppRowStateIgnored:
             return CDRAppRowSectionNotChecked;
+
+        // Newer than what's installed, set aside by the user: still an
+        // update, never "up to date".
+        case CDRAppRowStateSkipped:
+            return CDRAppRowSectionUpdates;
     }
     return CDRAppRowSectionNotChecked;
 }
@@ -69,6 +76,10 @@ static NSString *MediumDate(NSDate *date) {
     if (!self) return nil;
     _releases = @[];
     _shownTypes = CDRReleaseNoteTypeSetAll;
+    _networkTitle = @"Unknown";
+    _networkDetail = @"Conductor hasn't inspected this app's network access.";
+    _networkPolicyRows = @[];
+    _networkDeveloperLines = @[];
     return self;
 }
 
@@ -112,6 +123,8 @@ static NSString *MediumDate(NSDate *date) {
         }
     }
 
+    [model applyNetworkContext:context];
+
     CDRAppRowActions ignoreToggle = ignored ? CDRAppRowActionUnignore : CDRAppRowActionIgnore;
 
     if (parked) {
@@ -125,6 +138,20 @@ static NSString *MediumDate(NSDate *date) {
     BOOL working = (operationPhase != CDRUpdatePhaseIdle &&
                     operationPhase != CDRUpdatePhaseDone &&
                     operationPhase != CDRUpdatePhaseFailed);
+    // An operation parked at the approval step isn't doing anything: the row
+    // is whatever the decision says, plus the approval it is waiting for.
+    if (working && context.approvalParked) working = NO;
+
+    if (working && context.inspecting) {
+        // Conductor's own look at the new build, before the user is asked
+        // anything. Nothing to press while it runs.
+        [model adoptUpdateFromManifest:manifest installedVersion:registration.installedShortVersion];
+        model.state = CDRAppRowStateInspecting;
+        model.stateLine = [NSString stringWithFormat:@"inspecting %@ — %@ …",
+                           manifest.version ?: @"the new build", CDRUpdatePhaseName(operationPhase)];
+        model.actions = CDRAppRowActionNone;
+        return model;
+    }
     if (working) {
         [model adoptUpdateFromManifest:manifest installedVersion:registration.installedShortVersion];
         model.state = CDRAppRowStateWorking;
@@ -259,6 +286,26 @@ static NSString *MediumDate(NSDate *date) {
             model.actions = CDRAppRowActionCheckNow | ignoreToggle;
             break;
         }
+
+        case CDRUpdateOutcomeSkipped: {
+            // The user set this version aside. Checking the app by hand
+            // brings it back.
+            [model adoptUpdateFromManifest:manifest installedVersion:registration.installedShortVersion];
+            model.state = CDRAppRowStateSkipped;
+            model.stateLine = [NSString stringWithFormat:@"%@ skipped (installed: %@)",
+                               manifest.version, registration.installedShortVersion];
+            model.actions = CDRAppRowActionCheckNow | ignoreToggle;
+            break;
+        }
+    }
+
+    // A verified build waiting on the network approval outranks whatever
+    // else the row would say: that approval is the next thing to do.
+    if (context.networkApprovalNeeded && (model.actions & CDRAppRowActionInstall)) {
+        model.state = CDRAppRowStateNeedsNetworkApproval;
+        model.stateLine = [NSString stringWithFormat:@"%@ adds internet access — approve to install",
+                           manifest.version ?: @"the update"];
+        model.contributesToBadge = YES;
     }
     return model;
 }
@@ -290,6 +337,106 @@ static NSString *MediumDate(NSDate *date) {
     self.releaseDate = releases.firstObject.date;
     self.artifactSize = manifest.artifactSize;
     self.changelogURL = manifest.changelogURL;
+}
+
+#pragma mark - NETWORK row
+
+static NSString *ShortEntitlement(NSString *key) {
+    return [key hasPrefix:@"com.apple.security."] ? [key substringFromIndex:@"com.apple.security.".length] : key;
+}
+
+/// What the NETWORK row says, from what the controller read. Pure wording:
+/// the installed build's posture on its own, or — once a staged build has
+/// been verified and inspected — how the new build compares.
+- (void)applyNetworkContext:(nullable CDRAppRowContext *)context {
+    if (!context.installedNetworkKnown && !context.inspection) return;   // keep "hasn't inspected"
+
+    CDRNetworkPosture installed = (CDRNetworkPosture)context.installedPosture;
+    CDRNetworkInspection *inspection = context.inspection;
+    CDRInternetAccessPolicy *policy = inspection ? inspection.stagedPolicy : context.installedPolicy;
+    BOOL hasPolicy = policy.rows.count > 0;
+    self.networkPolicyRows = policy.rows ?: @[];
+    self.networkTone = CDRNetworkRowToneNeutral;
+    self.networkTrailing = nil;
+
+    if (inspection) {
+        self.networkTrailing = @"Team ID matches";
+        switch (inspection.change) {
+            case CDRNetworkChangeGained:
+                self.networkTitle = @"Gains internet access";
+                self.networkTone = CDRNetworkRowToneAttention;
+                self.networkDetail = hasPolicy
+                    ? [NSString stringWithFormat:@"%@ made no connections · %@ says where it connects, and why",
+                       inspection.installedVersion, inspection.stagedVersion]
+                    : [NSString stringWithFormat:@"%@ made no connections · %@ doesn’t say why it needs to",
+                       inspection.installedVersion, inspection.stagedVersion];
+                break;
+            case CDRNetworkChangeLost:
+                self.networkTitle = @"Drops network access";
+                self.networkTone = CDRNetworkRowTonePositive;
+                self.networkDetail = [NSString stringWithFormat:@"%@ could connect · %@ makes no connections",
+                                      inspection.installedVersion, inspection.stagedVersion];
+                break;
+            case CDRNetworkChangeNone:
+                if (inspection.stagedPosture == CDRNetworkPostureNone) {
+                    self.networkTitle = @"No network access";
+                    self.networkTone = CDRNetworkRowTonePositive;
+                    self.networkDetail = [NSString stringWithFormat:@"Same as %@ · this build makes no connections",
+                                          inspection.installedVersion];
+                } else {
+                    self.networkTitle = @"Has network access";
+                    self.networkDetail = [NSString stringWithFormat:@"Same as %@ · %@",
+                        inspection.installedVersion,
+                        hasPolicy ? @"ships an Internet Access Policy" : @"no Internet Access Policy"];
+                }
+                break;
+        }
+    } else {
+        switch (installed) {
+            case CDRNetworkPostureNone:
+                self.networkTitle = @"No network access";
+                self.networkTone = CDRNetworkRowTonePositive;
+                self.networkDetail = @"This app makes no connections";
+                break;
+            case CDRNetworkPostureUnknown:
+                self.networkTitle = @"Unknown";
+                self.networkDetail = @"Conductor couldn’t read this app’s entitlements";
+                break;
+            case CDRNetworkPostureUnrestricted:
+                self.networkTitle = @"Has network access";
+                self.networkDetail = hasPolicy ? @"Not sandboxed · ships an Internet Access Policy"
+                                               : @"Not sandboxed · no Internet Access Policy";
+                break;
+            case CDRNetworkPostureClient:
+            case CDRNetworkPostureServer:
+            case CDRNetworkPostureBoth:
+                self.networkTitle = @"Has network access";
+                self.networkDetail = hasPolicy
+                    ? [NSString stringWithFormat:@"%@ · ships an Internet Access Policy",
+                       CDRNetworkPostureDisplayName(installed)]
+                    : [NSString stringWithFormat:@"%@ · no Internet Access Policy",
+                       CDRNetworkPostureDisplayName(installed)];
+                break;
+        }
+    }
+
+    // Developer scheme: the raw facts behind the sentence.
+    if (context.preferences.exposesDeveloperDetail) {
+        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+        NSString *team = inspection.teamID ?: context.teamID;
+        if (team.length > 0) [lines addObject:[@"Team ID " stringByAppendingString:team]];
+        NSMutableArray<NSString *> *keys = [NSMutableArray array];
+        for (NSString *key in context.installedEntitlementKeys) [keys addObject:ShortEntitlement(key)];
+        [lines addObject:[NSString stringWithFormat:@"installed: %@",
+                          keys.count > 0 ? [keys componentsJoinedByString:@", "] : @"no sandbox or network entitlements"]];
+        for (NSString *key in inspection.addedEntitlements) {
+            [lines addObject:[NSString stringWithFormat:@"+ %@", key]];
+        }
+        for (NSString *key in inspection.removedEntitlements) {
+            [lines addObject:[NSString stringWithFormat:@"− %@", key]];
+        }
+        self.networkDeveloperLines = lines;
+    }
 }
 
 #pragma mark - Derived
@@ -328,6 +475,7 @@ static NSString *MediumDate(NSDate *date) {
         case CDRAppRowStateCheckFailed: return @"exclamationmark.circle";
         case CDRAppRowStateUnknown: return @"circle.dashed";
         case CDRAppRowStateIgnored: return @"eye.slash";
+        case CDRAppRowStateSkipped: return @"forward";
     }
     return @"circle";
 }
@@ -385,6 +533,7 @@ static NSString *MediumDate(NSDate *date) {
                 case CDRUpdatePhaseDownloading: return @"Downloading…";
                 case CDRUpdatePhaseExtracting: return @"Unpacking…";
                 case CDRUpdatePhaseVerifying: return @"Verifying…";
+                case CDRUpdatePhaseInspecting: return @"Inspecting…";
                 case CDRUpdatePhaseAwaitingQuit: return @"Waiting for the app to quit…";
                 default: return @"Installing…";
             }
@@ -396,6 +545,8 @@ static NSString *MediumDate(NSDate *date) {
             return @"Not checked yet";
         case CDRAppRowStateIgnored:
             return @"Ignored";
+        case CDRAppRowStateSkipped:
+            return [NSString stringWithFormat:@"%@ skipped", self.advertisedVersion ?: @"This version"];
     }
     return @"";
 }

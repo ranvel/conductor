@@ -73,6 +73,10 @@ typedef NS_ENUM(NSInteger, CDRUpdateOutcome) {
     /// installed one's, while the user stops at major versions. Takes the
     /// state line over Held; `heldTypes` still says whether a hold applies too.
     CDRUpdateOutcomeStoppedAtMajor,
+    /// The user chose "Skip this version" for exactly this version. Quiet:
+    /// not notified, not installable, until a different version is
+    /// advertised or the user checks this app by hand (a break-through).
+    CDRUpdateOutcomeSkipped,
 };
 
 /// What one check concluded, plus the record to persist afterward.

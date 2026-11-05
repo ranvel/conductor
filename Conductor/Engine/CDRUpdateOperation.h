@@ -11,6 +11,8 @@
 @class CDRDevModeSession;
 @class CDRUpdateOperation;
 
+@class CDRNetworkInspection;
+
 NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSInteger, CDRUpdatePhase) {
@@ -19,6 +21,11 @@ typedef NS_ENUM(NSInteger, CDRUpdatePhase) {
     CDRUpdatePhaseDownloading,
     CDRUpdatePhaseExtracting,
     CDRUpdatePhaseVerifying,
+    /// After Verify has passed: reading the verified staged build's
+    /// entitlements and Internet Access Policy, then waiting for the
+    /// delegate to say whether to go on. A consent step — never reached by
+    /// a build that failed Verify, and unable to refuse one that passed.
+    CDRUpdatePhaseInspecting,
     CDRUpdatePhaseAwaitingQuit,
     CDRUpdatePhaseSwapping,
     CDRUpdatePhaseFinishing,
@@ -51,6 +58,14 @@ typedef NS_ENUM(NSInteger, CDRQuitDecision) {
      didFinishWithError:(nullable NSError *)error
       appWasQuitByFlow:(BOOL)wasQuit;
 @optional
+/// The staged build is verified and inspected. The operation is parked — it
+/// holds staging and does nothing — until `reply` is called, however long
+/// that takes: YES continues to the quit check and the swap, NO discards
+/// staging and finishes with CDRErrorApprovalDeclined. When the delegate
+/// doesn't implement this, the operation goes straight on (no Inspect phase).
+- (void)updateOperation:(CDRUpdateOperation *)op
+             didInspect:(CDRNetworkInspection *)inspection
+                  reply:(void (^)(BOOL proceed))reply;
 - (void)updateOperation:(CDRUpdateOperation *)op logMessage:(NSString *)message;
 /// Byte-level download progress (0…1). Main queue, ~2 Hz, only while the
 /// operation is in CDRUpdatePhaseDownloading.
@@ -75,9 +90,13 @@ typedef NS_ENUM(NSInteger, CDRQuitDecision) {
 ///      signature validation → notarization assessment.
 ///   6. Dequarantine the staged bundle (pre-swap: the swap stays the sole
 ///      mutation of /Applications).
-///   7. Quit check (delegate decision; polite terminate only).
-///   8. Atomic swap; displaced bundle to Trash (non-fatal if that fails).
-///   9. Clean staging.
+///   7. Inspect (v2): read the verified staged build's entitlements and
+///      Internet Access Policy next to the installed build's, and park
+///      until the delegate approves. Reads only; mutates nothing. If the
+///      park was long, the manifest is re-checked for a retraction first.
+///   8. Quit check (delegate decision; polite terminate only).
+///   9. Atomic swap; displaced bundle to Trash (non-fatal if that fails).
+///  10. Clean staging.
 @interface CDRUpdateOperation : NSObject
 
 - (instancetype)initWithRegistration:(CDRAppRegistration *)registration
@@ -98,6 +117,12 @@ typedef NS_ENUM(NSInteger, CDRQuitDecision) {
 /// YES while parked in AwaitingQuit after an UpdateOnQuit decision.
 @property (atomic, readonly, getter=isParkedAwaitingQuit) BOOL parkedAwaitingQuit;
 
+/// YES while parked in Inspecting, waiting for the delegate's approval.
+@property (atomic, readonly, getter=isParkedForApproval) BOOL parkedForApproval;
+
+/// The advertised version this operation was started for.
+@property (nonatomic, readonly) NSString *manifestVersion;
+
 /// Starts the operation. One shot; create a new operation per attempt.
 - (void)start;
 
@@ -106,6 +131,11 @@ typedef NS_ENUM(NSInteger, CDRQuitDecision) {
 /// a no-op in every other phase (a swap is never interrupted). Best-effort:
 /// if the app quits at the same moment, whichever lands first wins.
 - (void)cancelParkedUpdate;
+
+/// Declines a parked approval from outside the delegate's reply (the app is
+/// quitting, the update was superseded): discards staging and finishes with
+/// CDRErrorApprovalDeclined. A no-op unless parked in Inspecting.
+- (void)cancelParkedApproval;
 
 @end
 

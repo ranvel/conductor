@@ -656,4 +656,68 @@ static CDRUpdatePreferences *Prefs(CDRSoakDuration soak, BOOL stopAtMajor) {
     XCTAssertEqualObjects(b.retractedVersion, @"1.4");
 }
 
+#pragma mark - Skip this version (CND-7)
+
+- (void)testS1_ASkippedVersionIsQuietUntilADifferentVersionIsAdvertised {
+    CDRUpdateDecision *first = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.1", nil)
+                                               state:nil soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(first.outcome, CDRUpdateOutcomeAvailable);
+    CDRAppUpdateState *skipped = [first.stateAfterCheck stateBySkippingVersion:@"1.1" at:self.now];
+    XCTAssertEqualObjects(skipped.skippedVersion, @"1.1");
+
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.1", nil)
+                                           state:skipped soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeSkipped);
+    XCTAssertEqualObjects(d.stateAfterCheck.skippedVersion, @"1.1", @"the skip is kept");
+
+    // 1.1.0 is the same version, written differently.
+    d = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.1.0", nil)
+                        state:skipped soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable, @"a different advertised string forgets the skip");
+
+    // The next version is offered normally, and the skip is forgotten.
+    d = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.2", nil)
+                        state:skipped soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+    XCTAssertNil(d.stateAfterCheck.skippedVersion);
+}
+
+- (void)testS2_UrgencyDoesNotOverrideASkipButADeliberateCheckDoes {
+    CDRAppUpdateState *skipped = [[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now] stateBySkippingVersion:@"1.1" at:self.now];
+
+    // The vendor's urgency claim doesn't undo the user's own choice…
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.1", @"data_loss")
+                                           state:skipped soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeSkipped);
+
+    // …but checking that app by hand does: it is offered again, un-skipped.
+    d = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.1", nil)
+                        state:skipped soak:CDRSoakDurationOff breakThrough:YES];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeAvailable);
+    XCTAssertNil(d.stateAfterCheck.skippedVersion);
+}
+
+- (void)testS3_ASkipSurvivesThePlistRoundTripAndRetractionStillWins {
+    CDRAppUpdateState *skipped = [[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now] stateBySkippingVersion:@"1.1" at:self.now];
+    CDRAppUpdateState *read = [CDRAppUpdateState stateWithBundleID:kBundleID
+                                                 propertyListEntry:[skipped propertyListEntry]];
+    XCTAssertEqualObjects(read.skippedVersion, @"1.1");
+    // A state written before v2 simply has no skip.
+    NSMutableDictionary *old = [[skipped propertyListEntry] mutableCopy];
+    [old removeObjectForKey:@"skipped_version"];
+    XCTAssertNil([CDRAppUpdateState stateWithBundleID:kBundleID propertyListEntry:old].skippedVersion);
+
+    // Notified about 1.1, skipped it, then the developer pulls it: State A.
+    CDRAppUpdateState *notifiedAndSkipped = [[[[CDRAppUpdateState emptyStateWithBundleID:kBundleID at:self.now]
+        stateBySeeingVersion:@"1.1" build:nil at:self.now]
+        stateByNotingNotifiedVersion:@"1.1" build:nil at:self.now]
+        stateBySkippingVersion:@"1.1" at:self.now];
+    CDRUpdateDecision *d = [self decideInstalled:@"1.0" manifest:ManifestWithVersion(@"1.0", nil)
+                                           state:notifiedAndSkipped soak:CDRSoakDurationOff breakThrough:NO];
+    XCTAssertEqual(d.outcome, CDRUpdateOutcomeRetractedPending);
+    XCTAssertNil(d.stateAfterCheck.skippedVersion, @"seeing a different version forgets the skip");
+}
+
 @end

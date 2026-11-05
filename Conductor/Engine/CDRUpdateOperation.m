@@ -4,6 +4,9 @@
 //
 
 #import "CDRUpdateOperation.h"
+#import "CDRBundleInspector.h"
+#import "CDRInternetAccessPolicy.h"
+#import "CDRNetworkInspection.h"
 #import "CDRAppRegistration.h"
 #import "CDRManifest.h"
 #import "CDRManifestFetcher.h"
@@ -26,6 +29,7 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
         case CDRUpdatePhaseDownloading:  return @"Downloading";
         case CDRUpdatePhaseExtracting:   return @"Extracting";
         case CDRUpdatePhaseVerifying:    return @"Verifying";
+        case CDRUpdatePhaseInspecting:   return @"Inspecting";
         case CDRUpdatePhaseAwaitingQuit: return @"Waiting for app to quit";
         case CDRUpdatePhaseSwapping:     return @"Installing";
         case CDRUpdatePhaseFinishing:    return @"Finishing";
@@ -56,6 +60,9 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
 @property (nonatomic, readwrite, nullable) NSString *stagedShortVersion;
 @property (nonatomic, readwrite, nullable) NSString *stagedBuildVersion;
 @property (atomic, readwrite, getter=isParkedAwaitingQuit) BOOL parkedAwaitingQuit;
+@property (atomic, readwrite, getter=isParkedForApproval) BOOL parkedForApproval;
+/// When the manifest was last fetched and found not retracted.
+@property (nonatomic, nullable) NSDate *manifestCheckedAt;
 @property (nonatomic) BOOL appWasQuitByFlow;
 @property (nonatomic) BOOL started;
 @end
@@ -163,6 +170,10 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
 /// Last-moment re-check (retraction.md): hours may pass between notification
 /// and install. Fetch fresh; if the advertised version dropped below what the
 /// user was shown, abort cleanly.
+- (NSString *)manifestVersion {
+    return self.manifest.version;
+}
+
 - (void)stepRefetchManifest {
     NSString *shownVersion = self.manifest.version;
     [self.fetcher fetchManifestForRegistration:self.registration
@@ -178,10 +189,12 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
                 [self failWithError:CDRError(CDRErrorDowngradeRefused, self.registration.bundleID, nil,
                     @{NSLocalizedDescriptionKey: [NSString stringWithFormat:
                         @"%@: the developer retracted update %@. You already have the latest build (%@).",
-                        self.registration.bundleID, shownVersion, self.registration.installedShortVersion]})];
+                        self.registration.bundleID, shownVersion, self.registration.installedShortVersion],
+                      CDRErrorIsRetractionKey: @YES})];
                 return;
             }
             self.manifest = fresh;
+            self.manifestCheckedAt = [NSDate date];
             [self stepDownload];
         });
     }];
@@ -311,7 +324,97 @@ NSString *CDRUpdatePhaseName(CDRUpdatePhase phase) {
         return;
     }
 
-    [self stepQuitCheck:stagedApp];
+    [self stepInspect:stagedApp];
+}
+
+/// v2 — the consent step. Runs only here, after every check in stepVerify
+/// has passed, and only reads: the installed build's entitlements, and the
+/// verified staged build's entitlements and Internet Access Policy — both
+/// from under the signature Verify just validated. It cannot refuse a build
+/// (that is Verify's job, already done) and it changes nothing on disk; it
+/// hands what it read to the delegate and waits.
+- (void)stepInspect:(NSURL *)stagedApp {
+    id<CDRUpdateOperationDelegate> delegate = self.delegate;
+    if (![delegate respondsToSelector:@selector(updateOperation:didInspect:reply:)]) {
+        [self stepQuitCheck:stagedApp];
+        return;
+    }
+    [self enterPhase:CDRUpdatePhaseInspecting];
+    NSString *bundleID = self.registration.bundleID;
+
+    NSDictionary *installedEntitlements =
+        [CDRBundleInspector entitlementsForBundleAtURL:self.registration.appURL teamID:NULL];
+    NSString *stagedTeam = nil;
+    NSDictionary *stagedEntitlements = [CDRBundleInspector entitlementsForBundleAtURL:stagedApp teamID:&stagedTeam];
+    CDRNetworkInspection *inspection = [[CDRNetworkInspection alloc]
+        initWithInstalledVersion:self.registration.installedShortVersion
+                   stagedVersion:self.stagedShortVersion ?: self.manifest.version
+           installedEntitlements:installedEntitlements
+              stagedEntitlements:stagedEntitlements
+                    stagedPolicy:[CDRInternetAccessPolicy policyForBundleAtURL:stagedApp]
+                          teamID:stagedTeam ?: self.pinnedTeamID];
+    [self log:@"%@: network — installed %@: %@; staged %@: %@%@.", bundleID,
+        inspection.installedVersion, CDRNetworkPostureDisplayName(inspection.installedPosture),
+        inspection.stagedVersion, CDRNetworkPostureDisplayName(inspection.stagedPosture),
+        inspection.hasPolicy ? @", ships an Internet Access Policy" : @""];
+
+    // Park. The swap is not reachable from here until the delegate says so.
+    self.parkedForApproval = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [delegate updateOperation:self didInspect:inspection reply:^(BOOL proceed) {
+            dispatch_async(self.workQueue, ^{
+                if (!self.parkedForApproval) return;   // declined or cancelled first
+                self.parkedForApproval = NO;
+                if (!proceed) {
+                    [self failWithError:CDRError(CDRErrorApprovalDeclined, bundleID, nil, nil)];
+                    return;
+                }
+                [self stepRecheckAfterPark:stagedApp];
+            });
+        }];
+    });
+}
+
+- (void)cancelParkedApproval {
+    dispatch_async(self.workQueue, ^{
+        if (!self.parkedForApproval) return;
+        self.parkedForApproval = NO;
+        [self failWithError:CDRError(CDRErrorApprovalDeclined, self.registration.bundleID, nil, nil)];
+    });
+}
+
+/// An approval can sit for hours. If it did, repeat the last-moment
+/// retraction check (retraction.md) before going any further: fetch the
+/// manifest fresh and stop if the developer has pulled this version since.
+- (void)stepRecheckAfterPark:(NSURL *)stagedApp {
+    static const NSTimeInterval kRecheckAfter = 5 * 60;
+    if (self.manifestCheckedAt && [[NSDate date] timeIntervalSinceDate:self.manifestCheckedAt] < kRecheckAfter) {
+        [self stepQuitCheck:stagedApp];
+        return;
+    }
+    NSString *shownVersion = self.manifest.version;
+    [self.fetcher fetchManifestForRegistration:self.registration
+                                    completion:^(CDRManifest *fresh, NSError *error) {
+        dispatch_async(self.workQueue, ^{
+            if (!fresh) {
+                // Can't confirm it wasn't pulled: don't install on a guess.
+                [self failWithError:error];
+                return;
+            }
+            if ([CDRVersion compare:fresh.version to:shownVersion] == NSOrderedAscending) {
+                [self log:@"%@: advertised version regressed from %@ to %@ while waiting for approval — the developer retracted the update.",
+                    self.registration.bundleID, shownVersion, fresh.version];
+                [self failWithError:CDRError(CDRErrorDowngradeRefused, self.registration.bundleID, nil,
+                    @{NSLocalizedDescriptionKey: [NSString stringWithFormat:
+                        @"%@: the developer retracted update %@. You already have the latest build (%@).",
+                        self.registration.bundleID, shownVersion, self.registration.installedShortVersion],
+                      CDRErrorIsRetractionKey: @YES})];
+                return;
+            }
+            self.manifestCheckedAt = [NSDate date];
+            [self stepQuitCheck:stagedApp];
+        });
+    }];
 }
 
 /// §4 — never force-terminate; the user decides.

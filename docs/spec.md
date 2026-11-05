@@ -332,6 +332,37 @@ Consequences you get for free:
 - **A failed or interrupted update is a non-event.** Staging is discarded;
   the installed app never changed.
 
+### 5.1 After verification: network access and the Internet Access Policy
+
+Conductor's pitch to users is that an app shouldn't be able to do more than
+it needs to. So after a new build has passed all four checks above, and
+before it is installed, Conductor compares what the build is *allowed* to
+do on the network with what the installed build was allowed to do. It
+reads this from the entitlements in your code signature, never from the
+manifest.
+
+- **If your sandboxed app has no network entitlement and a new build adds
+  one** (`com.apple.security.network.client` or `.network.server`, or it
+  stops being sandboxed), users who have asked to approve that — the
+  default — are shown the change before the update installs.
+- **Ship an Internet Access Policy and say why.** Put an
+  `InternetAccessPolicy.plist` in `Contents/Resources/` (Objective
+  Development's format, the one Little Snitch reads) listing where your
+  app connects and for what purpose. Conductor shows those rows to the
+  user — and by default, an update that explains itself this way installs
+  without asking. A build that gains network access and ships no policy is
+  presented as one that "doesn't say why", with *Skip this version* as the
+  suggested choice.
+- **Dropping network access is good news.** If a new build becomes
+  sandboxed with no network entitlement, Conductor says so and never asks.
+- This step cannot cause a valid build to be refused, and nothing in the
+  manifest influences it. It only decides whether the user is asked.
+
+Conductor reads the policy's `Connections` (each entry's `Host` and
+`Purpose`, resolved through your `InternetAccessPolicy.strings` if the
+value is a key). Other parts of the format are read and not shown in this
+version. Everything is displayed as plain text.
+
 ## 6. Fallback semantics
 
 `fallback_url` exists because single-provider hosting goes down. If your

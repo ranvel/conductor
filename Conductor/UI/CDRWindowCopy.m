@@ -70,6 +70,7 @@ CDRAppRowActions CDRPrimaryActionForRow(CDRAppRowModel *row, NSString **outTitle
         case CDRAppRowStateUpToDate:
         case CDRAppRowStateUnknown:
         case CDRAppRowStateCheckFailed:
+        case CDRAppRowStateSkipped:   // checking by hand is what un-skips
             title = @"Check now";
             action = CDRAppRowActionCheckNow;
             break;

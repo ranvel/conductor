@@ -11,6 +11,9 @@
 @class CDRUpdateDecision;
 @class CDRUpdatePreferences;
 @class CDRRetractionNotice;
+@class CDRNetworkInspection;
+@class CDRInternetAccessPolicy;
+@class CDRInternetAccessPolicyRow;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -38,8 +41,6 @@ typedef NS_ENUM(NSInteger, CDRAppRowState) {
     /// and is not installed. Nothing is installable.
     CDRAppRowStateRetracted,
 
-    // Inspecting and NeedsNetworkApproval are drawn by the main window now;
-    // the inputs that produce them arrive with CND-7.
 
     /// The update contains a note type the user installs by hand.
     CDRAppRowStateHeld,
@@ -50,6 +51,8 @@ typedef NS_ENUM(NSInteger, CDRAppRowState) {
     CDRAppRowStateInspecting,
     /// The new build gains internet access and the user approves that first.
     CDRAppRowStateNeedsNetworkApproval,
+    /// The user chose "Skip this version" for the advertised version.
+    CDRAppRowStateSkipped,
 };
 
 typedef NS_OPTIONS(NSUInteger, CDRAppRowActions) {
@@ -106,7 +109,41 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 /// A retraction the user hasn't acknowledged. Keeps the row Retracted after
 /// the one-time decision has passed (later checks, relaunches).
 @property (nonatomic, nullable) CDRRetractionNotice *pendingRetraction;
+
+#pragma mark Network (CND-7)
+
+/// YES once the installed bundle's entitlements were looked at; the three
+/// values below mean nothing until then.
+@property (nonatomic) BOOL installedNetworkKnown;
+/// What the installed build may do on the network (NSInteger-typed
+/// CDRNetworkPosture, so this header doesn't pull the engine type in).
+@property (nonatomic) NSInteger installedPosture;
+@property (nonatomic, nullable) CDRInternetAccessPolicy *installedPolicy;
+/// The sandbox / network entitlements the installed build holds, and its
+/// Team ID — shown under the Developer interest scheme.
+@property (nonatomic, copy, nullable) NSArray<NSString *> *installedEntitlementKeys;
+@property (nonatomic, copy, nullable) NSString *teamID;
+/// The verified, staged new build next to the installed one, when an
+/// operation has inspected it.
+@property (nonatomic, nullable) CDRNetworkInspection *inspection;
+/// An operation Conductor started on its own to inspect the new build is
+/// still downloading / verifying / reading.
+@property (nonatomic) BOOL inspecting;
+/// A verified build is parked at the approval step: its operation is
+/// alive but doing nothing until the user answers.
+@property (nonatomic) BOOL approvalParked;
+/// …and the gate says that answer has to be asked for.
+@property (nonatomic) BOOL networkApprovalNeeded;
 @end
+
+/// How the NETWORK row's status is drawn.
+typedef NS_ENUM(NSInteger, CDRNetworkRowTone) {
+    CDRNetworkRowToneNeutral = 0,
+    /// Green: no access, or access dropped.
+    CDRNetworkRowTonePositive,
+    /// Amber: the new build gains access.
+    CDRNetworkRowToneAttention,
+};
 
 @interface CDRAppRowModel : NSObject
 
@@ -181,6 +218,21 @@ typedef NS_ENUM(NSInteger, CDRAppRowTone) {
 /// The app's resolved deferral as the user reads it ("3 days"); nil when
 /// the context carried no preferences or deferral is off.
 @property (nonatomic, readonly, nullable) NSString *deferralDurationName;
+
+#pragma mark NETWORK row
+
+/// "No network access", "Has network access", "Gains internet access", …
+@property (nonatomic, readonly) NSString *networkTitle;
+/// "Same as 1.2 · this build makes no connections".
+@property (nonatomic, readonly) NSString *networkDetail;
+@property (nonatomic, readonly) CDRNetworkRowTone networkTone;
+/// "Team ID matches" once a staged build has been verified; nil otherwise.
+@property (nonatomic, readonly, nullable) NSString *networkTrailing;
+/// The Internet Access Policy the row expands to: the staged build's when
+/// it was inspected, otherwise the installed build's. Empty when none.
+@property (nonatomic, readonly) NSArray<CDRInternetAccessPolicyRow *> *networkPolicyRows;
+/// Raw entitlement keys and the Team ID, under the Developer scheme only.
+@property (nonatomic, readonly) NSArray<NSString *> *networkDeveloperLines;
 
 /// Pure mapping — no I/O, no clock. Precedence: parked > working > ignored >
 /// lastError > decision > unknown.
