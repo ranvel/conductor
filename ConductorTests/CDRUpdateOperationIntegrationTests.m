@@ -287,6 +287,51 @@ static const int kPort = 8000;
     XCTAssertEqual(fetchError.code, CDRErrorBundleIDManifestMismatch);
 }
 
+- (void)testHarnessManifestExercisesReleaseNoteRules {
+    if (!self.serveDir) { XCTSkip(@"run TestHarness/build-testee.sh first"); }
+
+    // The real fetch path, against the manifest build-testee.sh wrote
+    // (spec.md §3.5): typed notes, an unknown type, a forged "retracted",
+    // and a history with entries on both sides of the installed version.
+    CDRManifestFetcher *fetcher = [[CDRManifestFetcher alloc] initWithSession:self.session];
+    XCTestExpectation *done = [self expectationWithDescription:@"fetch"];
+    __block CDRManifest *manifest = nil;
+    [fetcher fetchManifestForRegistration:[self registration]
+                               completion:^(CDRManifest *fetched, NSError *error) {
+        manifest = fetched;
+        [done fulfill];
+    }];
+    [self waitForExpectations:@[done] timeout:30];
+    XCTAssertNotNil(manifest);
+
+    CDRRelease *advertised = manifest.advertisedRelease;
+    XCTAssertEqualObjects(advertised.version, @"1.1");
+    XCTAssertNotNil(advertised.date);
+    XCTAssertGreaterThan(manifest.artifactSize.longLongValue, 0);
+
+    // All seven developer types, grouped in the fixed order although the
+    // manifest lists them backwards; two "fixed" items share one group.
+    XCTAssertEqual(advertised.typeSet, CDRReleaseNoteTypeSetDeveloperAuthored);
+    NSArray<CDRReleaseNoteGroup *> *groups = advertised.groups;
+    XCTAssertEqual(groups.count, 7u);
+    for (NSUInteger i = 0; i < groups.count; i++) {
+        XCTAssertEqual(groups[i].type, (CDRReleaseNoteType)i);
+    }
+    XCTAssertEqual(groups.lastObject.notes.count, 2u);
+
+    // The unknown type and the forged "retracted": dropped, logged, counted.
+    XCTAssertEqual(advertised.notes.count, 8u);
+    XCTAssertEqual(advertised.undisplayableNoteCount, 2u);
+    XCTAssertEqual(manifest.parseWarnings.count, 2u);
+
+    // History: 1.0.5 is the only entry strictly between installed (1.0) and
+    // advertised (1.1).
+    NSArray<CDRRelease *> *releases =
+        [manifest releasesNewerThanVersion:[self registration].installedShortVersion];
+    XCTAssertEqualObjects([releases valueForKey:@"version"], (@[@"1.1", @"1.0.5"]));
+    XCTAssertEqual(releases.lastObject.notes.count, 2u);
+}
+
 - (void)testReplayOfOlderSignedBuildIsRefused {
     if (!self.serveDir) { XCTSkip(@"run TestHarness/build-testee.sh first"); }
 

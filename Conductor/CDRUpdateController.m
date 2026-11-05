@@ -176,6 +176,11 @@ BOOL CDRDecisionWarrantsNotification(CDRUpdateDecision *decision,
             }
 
             [self.lastErrors removeObjectForKey:bundleID];
+            // Release notes are display data: anything the parser dropped is
+            // said here, once per check, and changes nothing else.
+            for (NSString *warning in manifest.parseWarnings) {
+                [CDRSharedLog log:[NSString stringWithFormat:@"%@: manifest — %@", bundleID, warning]];
+            }
             NSDate *now = [NSDate date];
             CDRSoakDuration soak = CDRSoakDurationFromDefaultsToken(
                 [self.defaults stringForKey:CDRSoakDurationDefaultsKey]);
